@@ -16,4 +16,6 @@ var (
 	_ store.InvitationStore            = (*InvitationStore)(nil)
 	_ store.SuperuserStore             = (*SuperuserStore)(nil)
 	_ store.SuperuserRefreshTokenStore = (*SuperuserRefreshTokenStore)(nil)
+	_ store.PersonalAccessTokenStore   = (*PersonalAccessTokenStore)(nil)
+	_ store.DeviceAuthorizationStore   = (*DeviceAuthorizationStore)(nil)
 )

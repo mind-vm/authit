@@ -12,6 +12,7 @@ authit was designed by studying two existing implementations (a full-featured bu
   - `user` — registration, login, sessions, password reset, email verification, TOTP/2FA.
   - `team` — organizations, membership, roles, invitations.
   - `superuser` — a structurally separate operator identity, kept apart from `user` by JWT audience (not a separate secret), with impersonation.
+- **CLI/non-interactive auth is a separate concern from browser sessions.** `pat` (personal access tokens) and `device` (RFC 8628 device-authorization-grant) don't mint JWTs — they resolve *who* is asking, and leave it to the host application to decide what credential to hand back.
 - **Authorization is the caller's job.** `team` methods that change roles or remove members do not check the caller's own role — a host application resolves the caller's `Member` (via `GetMemberByUserAndTeam`) and checks it before calling. This keeps authit's authorization model unopinionated about your app's specific rules.
 
 ## Packages
@@ -25,6 +26,8 @@ authit was designed by studying two existing implementations (a full-featured bu
 | `user` | Registration, login/logout/refresh, sessions, password reset, email verification, TOTP/2FA |
 | `team` | Teams, membership, roles, invitations |
 | `superuser` | Operator accounts, login/refresh, deactivation, impersonation |
+| `pat` | Personal access tokens — named, scoped, optionally-expiring bearer credentials for CLIs/scripts |
+| `device` | RFC 8628 OAuth 2.0 Device Authorization Grant — "visit this URL, enter this code" CLI login |
 
 ## Quick start
 
@@ -60,6 +63,28 @@ if result.RequiresTwoFactor {
 ```
 
 `team` and `superuser` follow the same shape: define `Stores`, construct with `NewService`, call methods.
+
+### CLI auth (`pat` / `device`)
+
+```go
+patSvc, _ := pat.NewService(pat.Stores{Tokens: myTokenStore}, pat.Config{Prefix: "mb_"})
+raw, token, err := patSvc.CreateToken(ctx, userID, "laptop", []string{"read", "write"}, nil)
+// raw is shown to the user once; only its hash is stored.
+resolved, err := patSvc.Resolve(ctx, incomingBearerToken) // on every request
+
+deviceSvc, _ := device.NewService(device.Stores{Authorizations: myDeviceStore}, device.Config{})
+auth, err := deviceSvc.StartDeviceAuthorization(ctx, "cli", "read write")
+// show auth.UserCode + your own verification URL to the CLI user
+
+// from an authenticated web session, once the user enters the code:
+deviceSvc.ApproveDeviceAuthorization(ctx, callerUserID, userCode)
+
+// the CLI polls:
+userID, scope, err := deviceSvc.PollDeviceToken(ctx, auth.DeviceCode)
+// on device.ErrAuthorizationPending / ErrSlowDown, wait auth.Interval (bumping it on
+// ErrSlowDown) and poll again; on success, mint whatever credential you want (a pat
+// token, a user session, ...) for userID.
+```
 
 ## What's deliberately not included
 

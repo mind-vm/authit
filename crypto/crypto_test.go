@@ -112,3 +112,37 @@ func TestGenerateBackupCodes(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateUserCode(t *testing.T) {
+	code1, err := authitcrypto.GenerateUserCode()
+	if err != nil {
+		t.Fatalf("GenerateUserCode: %v", err)
+	}
+	code2, err := authitcrypto.GenerateUserCode()
+	if err != nil {
+		t.Fatalf("GenerateUserCode: %v", err)
+	}
+	if len(code1) != 9 || code1[4] != '-' {
+		t.Fatalf("expected an XXXX-XXXX shaped code, got %q", code1)
+	}
+	if code1 == code2 {
+		t.Fatal("expected distinct codes across calls (astronomically unlikely collision)")
+	}
+	for _, r := range code1 {
+		if r == '-' {
+			continue
+		}
+		if !containsRune("BCDFGHJKLMNPQRSTVWXZ", r) {
+			t.Fatalf("unexpected character %q in user code %q", r, code1)
+		}
+	}
+}
+
+func containsRune(s string, r rune) bool {
+	for _, c := range s {
+		if c == r {
+			return true
+		}
+	}
+	return false
+}
