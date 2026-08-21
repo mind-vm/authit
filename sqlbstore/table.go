@@ -14,13 +14,10 @@
 // conversion and config, not hand-write Create/Get/List/Update against
 // sqlb's query builder.
 //
-// Create and Update both go through sqlb's InsertRows(...).OnConflictUpdate,
-// using the exact same ToRow conversion: Update is only ever called on an
-// already-fetched, already-persisted value (every authit service follows a
-// fetch-mutate-write pattern), so "insert, or update on conflict" is
-// exactly the semantics wanted — no separate field-by-field Set() calls,
-// and no risk of a stringly-typed column name drifting out of sync with a
-// renamed struct field, since ToRow/FromRow are ordinary typed Go code.
+// Create goes through sqlb's InsertRows; Update goes through raw
+// UpdateRows(...).Set(...) rather than an upsert — see ToUpdateColumns for
+// why they can't share one code path despite both starting from the same
+// T.
 package sqlbstore
 
 import (
@@ -34,19 +31,11 @@ import (
 
 // Table binds authit's canonical type T to an app's sqlb row type R.
 type Table[R, T any] struct {
-	// ToRow converts a fully-populated T into the row to insert/upsert,
-	// EXCEPT the primary key — Table handles that separately via
-	// GetID/SetID (see Create/Update), so ToRow's own handling of R's ID
-	// field is irrelevant and can be left however's convenient.
-	//
-	// A field present in T but missing from ToRow's output is NOT an
-	// error at Create (the column just gets R's zero value, same as any
-	// other field ToRow doesn't set) — but at Update, if that column is
-	// also listed in UpdatableColumns, the omission silently writes the
-	// zero value on every update, with no error: `col = EXCLUDED.col`
-	// upserts whatever ToRow put in the proposed row, and a Go zero value
-	// is a perfectly valid, silently-wrong SQL value. Double-check that
-	// ToRow includes every field named in UpdatableColumns.
+	// ToRow converts a fully-populated T into the row to insert, EXCEPT the
+	// primary key — Create handles that separately via SetID, so ToRow's
+	// own handling of R's ID field is irrelevant and can be left however's
+	// convenient. Used only by Create; Update uses ToUpdateColumns
+	// instead (see there for why they aren't the same function).
 	ToRow func(T) R
 	// FromRow converts a row read back from the database into T. Called
 	// after every Create/Update/Get/List, so DB-generated values (a
@@ -57,18 +46,29 @@ type Table[R, T any] struct {
 	GetID func(T) string
 	// SetID returns a copy of row with its primary key column set to id.
 	// Create calls this with "" (so a defaulted column, e.g. a generated
-	// UUIDv7, is left to the database rather than whatever GetID(v)
-	// happened to already hold); Update calls it with the real ID, since
-	// an upsert's ON CONFLICT target only matches if the row being written
-	// actually carries the ID being conflicted on.
+	// UUIDv7, is left to the database rather than whatever the row
+	// happened to hold), then inserts — sqlb's InsertRows only writes an
+	// explicit value for a database-defaulted column when the Go field is
+	// non-zero, so leaving ID at its zero value here is what makes the
+	// database generate one.
 	SetID func(R, string) R
 	// IDColumn is the row's primary key column name — used by GetByID and
-	// as Update's upsert conflict target.
+	// as Update's WHERE clause.
 	IDColumn string
-	// UpdatableColumns lists every column Update is allowed to write,
-	// typically every column except IDColumn and anything immutable (e.g.
-	// created_at, a hash set once at creation).
-	UpdatableColumns []string
+	// ToUpdateColumns extracts exactly the (column name, value) pairs
+	// Update should write, as explicit bound parameters via
+	// UpdateRows(...).Set(...) — deliberately NOT built from ToRow's
+	// output. ToRow feeds Create's InsertRows, which treats a Go zero
+	// value on a database-defaulted column as "leave this to the
+	// database" (so a fresh row's ID/created_at defer to their defaults,
+	// as intended) — but Update has no such thing as "leave it unset": v
+	// is always an already-fetched, already-mutated value, so a field
+	// that's genuinely false/0/"" must be written as exactly that. Reusing
+	// ToRow for Update silently reverts any explicitly-zero,
+	// database-defaulted column (e.g. an `is_active boolean DEFAULT true`
+	// column being set to false) back to its default, with no error —
+	// caught by this package's own test suite before it shipped.
+	ToUpdateColumns func(T) map[string]any
 }
 
 // Create inserts v and returns what was actually persisted (DB defaults
@@ -83,38 +83,105 @@ func (t Table[R, T]) Create(ctx context.Context, db sqlb.Executor, v T) (T, erro
 	return t.FromRow(rows[0]), nil
 }
 
-// Update upserts v by IDColumn, writing exactly UpdatableColumns.
+// Update writes exactly ToUpdateColumns(v) to the row identified by
+// GetID(v).
 func (t Table[R, T]) Update(ctx context.Context, db sqlb.Executor, v T) error {
-	row := t.SetID(t.ToRow(v), t.GetID(v))
-	if _, err := sqlb.InsertRows(&row).OnConflictUpdate([]string{t.IDColumn}, t.UpdatableColumns...).Exec(ctx, db); err != nil {
+	stmt := sqlb.UpdateRows[R]().Where(sqlb.F(t.IDColumn).Eq(t.GetID(v)))
+	for column, value := range t.ToUpdateColumns(v) {
+		stmt = stmt.Set(column, value)
+	}
+	if _, err := stmt.Exec(ctx, db); err != nil {
 		return fmt.Errorf("sqlbstore: updating: %w", err)
 	}
 	return nil
 }
 
 // GetBy returns the row where column equals value, or store.ErrNotFound.
+// Sugar for the common single-column case of GetWhere.
 func (t Table[R, T]) GetBy(ctx context.Context, db sqlb.Executor, column string, value any) (T, error) {
-	row, err := sqlb.Query[R]().Where(sqlb.F(column).Eq(value)).One(ctx, db)
+	return t.GetWhere(ctx, db, sqlb.F(column).Eq(value))
+}
+
+// ListBy returns every row where column equals value. Sugar for the
+// common single-column case of ListWhere.
+func (t Table[R, T]) ListBy(ctx context.Context, db sqlb.Executor, column string, value any) ([]T, error) {
+	return t.ListWhere(ctx, db, sqlb.F(column).Eq(value))
+}
+
+// GetWhere returns the row matching every pred (AND'd together), or
+// store.ErrNotFound — for lookups GetBy's single-column shape can't
+// express, e.g. a compound key (user_id = ? AND team_id = ?).
+func (t Table[R, T]) GetWhere(ctx context.Context, db sqlb.Executor, preds ...sqlb.Pred) (T, error) {
+	row, err := sqlb.Query[R]().Where(preds...).One(ctx, db)
 	switch {
 	case errors.Is(err, sqlb.ErrNotFound):
 		var zero T
 		return zero, store.ErrNotFound
 	case err != nil:
 		var zero T
-		return zero, fmt.Errorf("sqlbstore: getting by %s: %w", column, err)
+		return zero, fmt.Errorf("sqlbstore: getting: %w", err)
 	}
 	return t.FromRow(row), nil
 }
 
-// ListBy returns every row where column equals value.
-func (t Table[R, T]) ListBy(ctx context.Context, db sqlb.Executor, column string, value any) ([]T, error) {
-	rows, err := sqlb.Query[R]().Where(sqlb.F(column).Eq(value)).All(ctx, db)
+// ListWhere returns every row matching every pred (AND'd together).
+func (t Table[R, T]) ListWhere(ctx context.Context, db sqlb.Executor, preds ...sqlb.Pred) ([]T, error) {
+	rows, err := sqlb.Query[R]().Where(preds...).All(ctx, db)
 	if err != nil {
-		return nil, fmt.Errorf("sqlbstore: listing by %s: %w", column, err)
+		return nil, fmt.Errorf("sqlbstore: listing: %w", err)
 	}
 	out := make([]T, len(rows))
 	for i, row := range rows {
 		out[i] = t.FromRow(row)
 	}
 	return out, nil
+}
+
+// CountWhere counts rows matching every pred (AND'd together).
+func (t Table[R, T]) CountWhere(ctx context.Context, db sqlb.Executor, preds ...sqlb.Pred) (int64, error) {
+	n, err := sqlb.Query[R]().Where(preds...).Count(ctx, db)
+	if err != nil {
+		return 0, fmt.Errorf("sqlbstore: counting: %w", err)
+	}
+	return n, nil
+}
+
+// ExistsWhere reports whether any row matches every pred (AND'd
+// together).
+func (t Table[R, T]) ExistsWhere(ctx context.Context, db sqlb.Executor, preds ...sqlb.Pred) (bool, error) {
+	ok, err := sqlb.Query[R]().Where(preds...).Exists(ctx, db)
+	if err != nil {
+		return false, fmt.Errorf("sqlbstore: checking existence: %w", err)
+	}
+	return ok, nil
+}
+
+// Delete removes the row identified by id (IDColumn). Idempotent: deleting
+// an already-gone row is not an error.
+func (t Table[R, T]) Delete(ctx context.Context, db sqlb.Executor, id string) error {
+	_, err := t.DeleteWhere(ctx, db, sqlb.F(t.IDColumn).Eq(id))
+	return err
+}
+
+// DeleteWhere removes every row matching every pred (AND'd together).
+// Idempotent: matching zero rows is not an error — a caller wanting "was
+// anything actually deleted" should check the returned count.
+func (t Table[R, T]) DeleteWhere(ctx context.Context, db sqlb.Executor, preds ...sqlb.Pred) (int64, error) {
+	n, err := sqlb.DeleteRows[R]().Where(preds...).Exec(ctx, db)
+	if err != nil {
+		return 0, fmt.Errorf("sqlbstore: deleting: %w", err)
+	}
+	return n, nil
+}
+
+// SetColumnWhere writes value to column on every row matching every pred
+// (AND'd together) — for a bulk state change across many rows at once
+// (e.g. "revoke every refresh token for this user") that isn't shaped like
+// Update's "one row, identified by ID." Same explicit-bound-parameter
+// mechanism as Update, so it has no zero-value trap either.
+func (t Table[R, T]) SetColumnWhere(ctx context.Context, db sqlb.Executor, column string, value any, preds ...sqlb.Pred) error {
+	if _, err := sqlb.UpdateRows[R]().Set(column, value).Where(preds...).Exec(ctx, db); err != nil {
+		return fmt.Errorf("sqlbstore: bulk-updating %s: %w", column, err)
+	}
+	return nil
 }

@@ -2,11 +2,9 @@ package sqlbstore_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jryannel/authit/sqlbstore"
 	"github.com/jryannel/authit/store"
 	"github.com/jryannel/sqlb"
@@ -46,10 +44,15 @@ func adapter(db sqlb.Executor) sqlbstore.PersonalAccessTokenAdapter[testToken] {
 					LastUsedAt: r.LastUsedAt, CreatedAt: r.CreatedAt,
 				}
 			},
-			GetID:            func(t store.PersonalAccessToken) string { return t.ID },
-			SetID:            func(r testToken, id string) testToken { r.ID = id; return r },
-			IDColumn:         "id",
-			UpdatableColumns: []string{"label", "scopes", "expires_at", "revoked_at", "last_used_at"},
+			GetID:    func(t store.PersonalAccessToken) string { return t.ID },
+			SetID:    func(r testToken, id string) testToken { r.ID = id; return r },
+			IDColumn: "id",
+			ToUpdateColumns: func(t store.PersonalAccessToken) map[string]any {
+				return map[string]any{
+					"label": nullable(t.Name), "scopes": t.Scopes, "expires_at": t.ExpiresAt,
+					"revoked_at": t.RevokedAt, "last_used_at": t.LastUsedAt,
+				}
+			},
 		},
 		DB:              db,
 		UserIDColumn:    "owner_id",
@@ -71,24 +74,11 @@ func deref(s *string) string {
 	return *s
 }
 
-// testDB connects to MYBRAIN_DATABASE_URL (any reachable Postgres works;
-// this package has no relation to mybrain's schema) and creates/drops a
-// throwaway table for the test. Skips if no DSN is configured, so this
-// suite doesn't fail CI environments with no Postgres available.
+// testDB creates/drops a throwaway table for TestPersonalAccessTokenAdapterCRUD.
 func testDB(t *testing.T) sqlb.Executor {
 	t.Helper()
-	dsn := os.Getenv("MYBRAIN_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("MYBRAIN_DATABASE_URL not set; skipping sqlbstore integration test")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if _, err := pool.Exec(ctx, `
+	pool := testPool(t)
+	return applyDDL(t, pool, `
 		CREATE TABLE IF NOT EXISTS sqlbstore_test_tokens (
 			id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 			owner_id uuid NOT NULL,
@@ -99,17 +89,7 @@ func testDB(t *testing.T) sqlb.Executor {
 			revoked_at timestamptz,
 			last_used_at timestamptz,
 			created_at timestamptz NOT NULL DEFAULT now()
-		)`); err != nil {
-		t.Fatalf("creating test table: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS sqlbstore_test_tokens`)
-	})
-	if _, err := pool.Exec(ctx, `TRUNCATE sqlbstore_test_tokens`); err != nil {
-		t.Fatalf("truncating test table: %v", err)
-	}
-
-	return sqlb.New(pool)
+		)`, "sqlbstore_test_tokens")
 }
 
 func TestPersonalAccessTokenAdapterCRUD(t *testing.T) {
