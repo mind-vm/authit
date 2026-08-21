@@ -70,3 +70,10 @@ if result.RequiresTwoFactor {
 ## Status
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
+
+## License
+
+Proprietary — see [LICENSE](LICENSE). This is not open source: it's a
+reusable asset licensed to clients per-project via
+[CLIENT-LICENSE-TEMPLATE.md](CLIENT-LICENSE-TEMPLATE.md), not for
+independent public use.
