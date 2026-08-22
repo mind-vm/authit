@@ -45,6 +45,10 @@ func (s *Service) Register(ctx context.Context, email, password string) (store.U
 // Authenticate verifies email/password and, if the account has no 2FA
 // enabled, issues a token pair. If 2FA is enabled, it returns a pending
 // two-factor token instead — call VerifyTwoFactorLogin to complete login.
+//
+// Under the default Config.EmailVerification (EmailVerificationRequired) an
+// account whose address is unverified is refused with ErrEmailNotVerified;
+// see EmailVerificationPolicy for when to relax that.
 func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, ipAddress string) (AuthResult, error) {
 	locked, u, err := s.checkLockoutAndFetchUser(ctx, email)
 	if err != nil {
@@ -57,7 +61,7 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		s.recordFailedLogin(ctx, email, ipAddress)
 		return AuthResult{}, ErrInvalidCredentials
 	}
-	if !u.EmailVerified {
+	if s.cfg.EmailVerification == EmailVerificationRequired && !u.EmailVerified {
 		return AuthResult{}, ErrEmailNotVerified
 	}
 	_ = s.stores.Lockouts.ClearFailedLoginAttempts(ctx, email)
