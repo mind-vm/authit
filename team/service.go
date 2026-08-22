@@ -8,6 +8,25 @@
 // application checks (e.g.) "is the caller an owner or admin of this team?"
 // before calling UpdateMemberRole or RemoveMember, typically using the
 // caller's own Member record fetched via GetMemberByUserAndTeam.
+//
+// # What this package is not
+//
+// This is multi-tenancy, not an authorization model, and the difference
+// matters most in one place: a role here is always a role *in a team*. An
+// identity that spans teams has no home in this model, and shouldn't be given
+// one — build it in your own schema, joined to authit by user id, and keep
+// using authit for authentication.
+//
+// The tell that you are about to fight the model: you find yourself inventing
+// a team that every privileged user joins, or writing a membership row per
+// team to express one global capability. Both fall over the moment such a
+// principal must reach a team it holds no membership in at all. A flag or a
+// table of your own, checked by your own code before you call in here, is the
+// shape that keeps working.
+//
+// Composition is expected, not exceptional: one account is routinely both a
+// cross-team principal in your model and an ordinary Member of some team
+// here, and the two answer different questions about it.
 package team
 
 import (
