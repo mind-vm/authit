@@ -8,15 +8,8 @@ import (
 	authitcrypto "github.com/jryannel/authit/crypto"
 	authitjwt "github.com/jryannel/authit/jwt"
 	"github.com/jryannel/authit/store"
+	"github.com/jryannel/sqlb"
 )
-
-// Stores groups the persistence ports the superuser package needs.
-type Stores struct {
-	Superusers    store.SuperuserStore
-	RefreshTokens store.SuperuserRefreshTokenStore
-	// Lockouts is optional; if nil, failed-login lockout is disabled.
-	Lockouts store.LockoutStore
-}
 
 // Config tunes the superuser package's flows. Defaults are intentionally
 // stricter than the user package's: short-lived access tokens, since
@@ -31,8 +24,7 @@ type Config struct {
 	RefreshTokenTTL time.Duration
 	// ImpersonationTTL defaults to 15 minutes.
 	ImpersonationTTL time.Duration
-	// MaxFailedLoginAttempts defaults to 5. Ignored if Stores.Lockouts is
-	// nil.
+	// MaxFailedLoginAttempts defaults to 5.
 	MaxFailedLoginAttempts int
 	// FailedLoginWindow defaults to 15 minutes.
 	FailedLoginWindow time.Duration
@@ -69,22 +61,29 @@ type TokenPair struct {
 
 // Service implements the superuser/operator auth plane.
 type Service struct {
-	stores Stores
+	db     *sqlb.DB
 	signer authitjwt.Signer
 	cfg    Config
 }
 
-// NewService constructs a Service. signer may be the same jwt.Signer used
-// by the user package — audience separation, not a separate secret, is
-// what keeps the two planes from accepting each other's tokens.
-func NewService(stores Stores, signer authitjwt.Signer, cfg Config) (*Service, error) {
-	if stores.Superusers == nil || stores.RefreshTokens == nil {
-		return nil, errors.New("authit/superuser: Stores.Superusers and Stores.RefreshTokens are required")
+// NewService constructs a Service over db, which must be backed by a database
+// carrying authit's tables — see authitschema.Declare.
+//
+// signer may be the same jwt.Signer used by the user package — audience
+// separation, not a separate secret, is what keeps the two planes from
+// accepting each other's tokens.
+//
+// Lockout is no longer optional. It used to be, because it was a store a host
+// might not have implemented; now it is two tables that come with the rest, so
+// there is nothing to leave out and no nil to check.
+func NewService(db *sqlb.DB, signer authitjwt.Signer, cfg Config) (*Service, error) {
+	if db == nil {
+		return nil, errors.New("authit/superuser: db is required")
 	}
 	if signer == nil {
 		return nil, errors.New("authit/superuser: signer is required")
 	}
-	return &Service{stores: stores, signer: signer, cfg: cfg.withDefaults()}, nil
+	return &Service{db: db, signer: signer, cfg: cfg.withDefaults()}, nil
 }
 
 // Bootstrap creates the first superuser, and only the first: it fails with
@@ -92,11 +91,11 @@ func NewService(stores Stores, signer authitjwt.Signer, cfg Config) (*Service, e
 // called once at application startup from a trusted source (e.g. an
 // environment variable), never from an HTTP handler.
 func (s *Service) Bootstrap(ctx context.Context, email, password, displayName string) (store.Superuser, error) {
-	count, err := s.stores.Superusers.CountSuperusers(ctx)
+	existing, err := sqlb.Query[store.Superuser]().Exists(ctx, s.db)
 	if err != nil {
 		return store.Superuser{}, err
 	}
-	if count > 0 {
+	if existing {
 		return store.Superuser{}, ErrAlreadyBootstrapped
 	}
 	return s.createSuperuser(ctx, email, password, displayName, nil)
@@ -115,32 +114,20 @@ func (s *Service) createSuperuser(ctx context.Context, email, password, displayN
 	if err != nil {
 		return store.Superuser{}, err
 	}
-	id, err := authitcrypto.NewID()
+	row := store.Superuser{
+		Email: email, PasswordHash: hash, DisplayName: displayName,
+		IsActive: true, CreatedByID: createdBy,
+	}
+	inserted, err := sqlb.InsertRows(&row).Exec(ctx, s.db)
 	if err != nil {
 		return store.Superuser{}, err
 	}
-	now := time.Now()
-	su := &store.Superuser{
-		ID: id, Email: email, PasswordHash: hash, DisplayName: displayName,
-		IsActive: true, CreatedBy: createdBy, CreatedAt: now, UpdatedAt: now,
-	}
-	if err := s.stores.Superusers.CreateSuperuser(ctx, su); err != nil {
-		return store.Superuser{}, err
-	}
-	return *su, nil
+	return inserted[0], nil
 }
 
 // ListSuperusers lists every superuser account.
 func (s *Service) ListSuperusers(ctx context.Context) ([]store.Superuser, error) {
-	list, err := s.stores.Superusers.ListSuperusers(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]store.Superuser, len(list))
-	for i, su := range list {
-		out[i] = *su
-	}
-	return out, nil
+	return sqlb.Query[store.Superuser]().All(ctx, s.db)
 }
 
 // Deactivate soft-deletes a superuser account and revokes all of its
@@ -150,14 +137,31 @@ func (s *Service) Deactivate(ctx context.Context, callerID, targetID string) err
 	if callerID == targetID {
 		return ErrCannotDeactivateSelf
 	}
-	su, err := s.stores.Superusers.GetSuperuserByID(ctx, targetID)
-	if err != nil {
+	// Deactivating and revoking are one unit of work: an account marked
+	// inactive whose sessions survived is still a usable operator session
+	// until it expires, which is exactly what this call is meant to prevent.
+	return s.db.WithTx(ctx, func(ctx context.Context, tx *sqlb.DB) error {
+		updated, err := store.UpdateSuperuser().
+			SetIsActive(false).
+			SetUpdatedAt(time.Now()).
+			Where(store.SuperuserCols.ID.Eq(targetID)).
+			Stmt().Exec(ctx, tx)
+		if err != nil {
+			return err
+		}
+		// Update returns the rows it touched, so an empty result is how "no
+		// such superuser" arrives — there is no separate lookup to do first.
+		if len(updated) == 0 {
+			return ErrNotFound
+		}
+		now := time.Now()
+		_, err = store.UpdateSuperuserRefreshToken().
+			SetRevokedAt(&now).
+			Where(
+				store.SuperuserRefreshTokenCols.SuperuserID.Eq(targetID),
+				store.SuperuserRefreshTokenCols.RevokedAt.IsNull(),
+			).
+			Stmt().Exec(ctx, tx)
 		return err
-	}
-	su.IsActive = false
-	su.UpdatedAt = time.Now()
-	if err := s.stores.Superusers.UpdateSuperuser(ctx, su); err != nil {
-		return err
-	}
-	return s.stores.RefreshTokens.RevokeAllSuperuserRefreshTokens(ctx, targetID)
+	})
 }

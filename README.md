@@ -1,29 +1,41 @@
 # authit
 
-A reusable Go library for user authentication, superuser (operator) authentication, and team/organization-based auth — with no assumption about which database you use.
+A reusable Go library for user authentication, superuser (operator) authentication, and team/organization-based auth, built on [sqlb](https://github.com/jryannel/sqlb) and Postgres.
 
-authit was designed by studying two existing implementations (a full-featured but Postgres-locked product auth system, and a modular monorepo's shared auth packages) and combining the best parts: the modular package split of the latter, the feature completeness of the former, plus a storage-port layer neither of them had.
+authit was designed by studying two existing implementations (a full-featured but Postgres-locked product auth system, and a modular monorepo's shared auth packages) and combining the best parts: the modular package split of the latter with the feature completeness of the former.
 
 ## Design
 
-- **No database assumption.** Every package that touches persistence depends only on interfaces defined in `store`. A host application implements those interfaces against whatever it uses — Postgres, SQLite, DynamoDB, or nothing at all. `memstore` ships a reference in-memory implementation of every interface, so the library is usable and testable out of the box.
-- **No social/OAuth login.** Email + password (+ optional TOTP) only, by design, for now.
+- **authit declares its tables into your registry.** It does not own a migration sequence and it does not hide storage behind interfaces. `authitschema.Declare(reg)` contributes authit's tables to the registry your application already migrates, and hands you back the `*schema.TableDef`s so your own tables can point real foreign keys at them.
 - **Three independent planes, one shared crypto/JWT layer:**
   - `user` — registration, login, sessions, password reset, email verification, TOTP/2FA.
   - `team` — organizations, membership, roles, invitations.
   - `superuser` — a structurally separate operator identity, kept apart from `user` by JWT audience (not a separate secret), with impersonation.
+- **No social/OAuth login.** Email + password (+ optional TOTP) only, by design, for now.
 - **CLI/non-interactive auth is a separate concern from browser sessions.** `pat` (personal access tokens) and `device` (RFC 8628 device-authorization-grant) don't mint JWTs — they resolve *who* is asking, and leave it to the host application to decide what credential to hand back.
-- **Authorization is the caller's job.** `team` methods that change roles or remove members do not check the caller's own role — a host application resolves the caller's `Member` (via `GetMemberByUserAndTeam`) and checks it before calling. This keeps authit's authorization model unopinionated about your app's specific rules.
-- **Roles are per-team, and only per-team.** A `Role` exists on a `Member`, and a `Member` exists in a `Team`, so `team` cannot express a principal whose identity *spans* teams — a platform auditor, a consultant, a support engineer working across many client organizations. That's deliberate, not a gap: such an identity belongs in your own schema, joined to authit by user id. If you find yourself inventing a team that every privileged user joins, or writing one membership row per team to express a single global capability, you're fighting the model — and both workarounds break the moment that principal must reach a team it holds no membership in. authit answers *who is this*; your model answers *what may they do*.
+- **Authorization is the caller's job.** `team` methods that change roles or remove members do not check the caller's own role — a host application resolves the caller's membership (via `GetMemberByUserAndTeam`) and checks it before calling.
+- **Roles are per-team, and only per-team.** A `Role` exists on a member, and a member exists in a team, so `team` cannot express a principal whose identity *spans* teams — a platform auditor, a consultant, a support engineer. That's deliberate: such an identity belongs in your own table, joined to authit by user id. Now that authit's tables are in your registry, that join is a real foreign key.
+
+## Why a direct sqlb dependency
+
+authit used to define seven storage-port interfaces (~40 methods), ship an in-memory implementation for tests, and offer a `sqlbstore` bridge module. It doesn't any more. Three reasons, in increasing order of weight:
+
+**The glue was where the bugs were.** Every host wrote a row type plus `ToRow`, `FromRow`, `GetID`, `SetID`, `IDColumn` and `ToUpdateColumns` — six functions per store, seven times over — and the mistakes that surfaced were in that translation, not in authit's logic. sqlb generates typed columns and typed updates, so `store.UserCols.Email.Eq(...)` and `UpdateUser().SetEmailVerified(true)` make a wrong column name a compile error instead of a runtime surprise.
+
+**A storage abstraction with one real implementation is cost without benefit.** It bought exactly two implementations, one of which was a test fake. Auth needs durable storage by definition; there is no plausible authit consumer with no database.
+
+**And the decisive one: foreign keys.** A library that owns its own migration sequence cannot be pointed at, because the two sequences apply independently and nothing orders them. Every reference across the boundary was a bare UUID enforcing nothing — so "deleting an account takes its coach identity with it" was not expressible, at any level of glue quality. That one isn't a matter of taste.
+
+The honest cost is that the test suite now needs a real Postgres. That turned out to be a net gain: the things authit most needs to be right about — counting failed logins over a window, expiring a token, a unique index refusing a second signup under contention, an `ON DELETE` cascading — are exactly where a hand-written fake's behaviour drifts from the database.
 
 ## Packages
 
 | Package | Purpose |
 |---|---|
-| `crypto` | Password hashing (bcrypt), opaque token generation/hashing, TOTP, AES-256-GCM secret encryption, ID generation |
+| `authitschema` | authit's table declaration, and `Declare(reg)` — the entry point a host wires |
+| `store` | Generated row types and typed columns (`sqlb generate`; do not edit) |
+| `crypto` | Password hashing (bcrypt), opaque token generation/hashing, TOTP, AES-256-GCM secret encryption |
 | `jwt` | JWT signing/verification (`Signer` interface, HMAC-SHA256 implementation), `Claims` |
-| `store` | Storage-port interfaces — the contract a host application implements |
-| `memstore` | In-memory implementation of every `store` interface, for tests and quick starts |
 | `user` | Registration, login/logout/refresh, sessions, password reset, email verification, TOTP/2FA |
 | `team` | Teams, membership, roles, invitations |
 | `superuser` | Operator accounts, login/refresh, deactivation, impersonation |
@@ -33,26 +45,44 @@ authit was designed by studying two existing implementations (a full-featured bu
 
 ## Quick start
 
+### 1. Compose the schema
+
+```go
+import (
+	"github.com/jryannel/authit/authitschema"
+	"github.com/jryannel/sqlb/schema"
+)
+
+var Registry = schema.NewRegistry()
+
+// authit's tables join your registry, and Auth carries them back so your own
+// tables can reference them.
+var Auth = authitschema.Declare(Registry)
+
+var Coach = Registry.Table("coaches",
+	schema.UUIDv7("id").PrimaryKey(),
+	// A real foreign key into authit's users: deleting the account takes the
+	// coach identity with it.
+	schema.Ref("user", Auth.User).OnDelete(schema.Cascade).Unique(),
+	schema.Timestamps(),
+)
+```
+
+Your existing `sqlb generate` / `sqlb migrate` run now covers authit's tables too — one registry, one migration sequence, `ON DELETE` chosen per relationship.
+
+### 2. Wire the services
+
 ```go
 import (
 	authitjwt "github.com/jryannel/authit/jwt"
-	"github.com/jryannel/authit/memstore"
 	"github.com/jryannel/authit/user"
+	"github.com/jryannel/sqlb"
 )
 
+db := sqlb.New(pool)
 signer, _ := authitjwt.NewHMACSigner(jwtSecret, authitjwt.Defaults{Issuer: "myapp"})
 
-stores := user.Stores{
-	Users:              memstore.NewUserStore(),       // swap for your own store.UserStore
-	RefreshTokens:      memstore.NewRefreshTokenStore(),
-	PasswordResets:     memstore.NewPasswordResetStore(),
-	EmailVerifications: memstore.NewEmailVerificationStore(),
-	TOTP:               memstore.NewTOTPStore(),
-	PendingTwoFactor:   memstore.NewPendingTwoFactorStore(),
-	Lockouts:           memstore.NewLockoutStore(),
-}
-
-svc, _ := user.NewService(stores, signer, myEmailSender, user.Config{
+svc, _ := user.NewService(db, signer, myEmailSender, user.Config{
 	TOTPEncryptionKey: totpKey, // 32 bytes, required if you use 2FA
 })
 
@@ -64,17 +94,37 @@ if result.RequiresTwoFactor {
 // result.Tokens.AccessToken / result.Tokens.RefreshToken
 ```
 
-`team` and `superuser` follow the same shape: define `Stores`, construct with `NewService`, call methods.
+`team`, `superuser`, `pat` and `device` follow the same shape: `NewService(db, ...)`, then call methods.
+
+Every constructor takes `*sqlb.DB` rather than the narrower `sqlb.Executor`, because several flows write more than one row and must do so atomically — rotating a refresh token revokes one and issues another; resetting a password consumes a token, rewrites the hash and revokes every session. `WithTx` joins an outer transaction rather than nesting, so if you already have one open, pass its tx-scoped `*sqlb.DB` and authit's writes land inside it.
+
+### Email verification
+
+By default `Authenticate` refuses an account whose address isn't verified, returning `ErrEmailNotVerified`. That's right for self-serve signup and wrong elsewhere — an emailed, tokenised B2B invite already proves the address, SSO provisioning arrives pre-verified, and seeded demo accounts want it off entirely. So it's a knob:
+
+```go
+user.Config{EmailVerification: user.EmailVerificationOptional} // default is ...Required
+```
+
+Relaxing the gate doesn't touch the flag — `User.EmailVerified` is still tracked, so your own features can still depend on it; only login stops doing so.
+
+For paths where the address really is already proven, mark it directly instead of minting and redeeming a token:
+
+```go
+svc.MarkEmailVerified(ctx, u.ID) // seeders, accepted invites, SSO provisioning
+```
+
+It's idempotent, and it kills any verification link already sitting in an inbox. Never call it from an unauthenticated path — that's the check `VerifyEmail` exists to perform.
 
 ### CLI auth (`pat` / `device`)
 
 ```go
-patSvc, _ := pat.NewService(pat.Stores{Tokens: myTokenStore}, pat.Config{Prefix: "mb_"})
+patSvc, _ := pat.NewService(db, pat.Config{Prefix: "mb_"})
 raw, token, err := patSvc.CreateToken(ctx, userID, "laptop", []string{"read", "write"}, nil)
 // raw is shown to the user once; only its hash is stored.
 resolved, err := patSvc.Resolve(ctx, incomingBearerToken) // on every request
 
-deviceSvc, _ := device.NewService(device.Stores{Authorizations: myDeviceStore}, device.Config{})
+deviceSvc, _ := device.NewService(db, device.Config{})
 auth, err := deviceSvc.StartDeviceAuthorization(ctx, "cli", "read write")
 // show auth.UserCode + your own verification URL to the CLI user
 
@@ -84,35 +134,14 @@ deviceSvc.ApproveDeviceAuthorization(ctx, callerUserID, userCode)
 // the CLI polls:
 userID, scope, err := deviceSvc.PollDeviceToken(ctx, auth.DeviceCode)
 // on device.ErrAuthorizationPending / ErrSlowDown, wait auth.Interval (bumping it on
-// ErrSlowDown) and poll again; on success, mint whatever credential you want (a pat
-// token, a user session, ...) for userID.
+// ErrSlowDown) and poll again; on success, mint whatever credential you want.
 ```
-
-### Email verification
-
-By default `Authenticate` refuses an account whose address isn't verified, returning `ErrEmailNotVerified`. That's the right default for self-serve signup, but it isn't the right policy everywhere — an emailed, tokenised B2B invite already proves the address, SSO provisioning arrives pre-verified, and seeded demo/test accounts want it off entirely. So it's a knob, not a law:
-
-```go
-user.Config{EmailVerification: user.EmailVerificationOptional} // default is ...Required
-```
-
-Relaxing the gate doesn't touch the flag — `User.EmailVerified` is still tracked, so your own features can still depend on it; only login stops doing so.
-
-For the paths where the address really is already proven, mark it directly instead of minting and redeeming a token:
-
-```go
-svc.MarkEmailVerified(ctx, u.ID) // seeders, accepted invites, SSO provisioning
-```
-
-It's idempotent, and it kills any verification link already sitting in an inbox. Never call it from an unauthenticated path — that's the check `VerifyEmail` exists to perform.
 
 ### HTTP: extracting and validating a bearer token
 
-authit is a service layer, not a web framework, with one exception. Pulling a bearer token off a request and validating it is identical in every consumer and quietly security-critical: `strings.TrimPrefix(h, "Bearer ")` turns a malformed header into a *token* rather than a rejection, the scheme is case-insensitive per RFC 7235 so a naive prefix check rejects valid requests, and "no token" and "bad token" are both 401 while "the signer can't verify anything" is a 500. So that one piece is tested here instead of approximated everywhere:
+authit is a service layer, not a web framework, with one exception. Pulling a bearer token off a request and validating it is identical in every consumer and quietly security-critical: `strings.TrimPrefix(h, "Bearer ")` turns a malformed header into a *token* rather than a rejection, the scheme is case-insensitive per RFC 7235 so a naive prefix check rejects valid requests, and "no token" and "bad token" are both 401 while "the signer can't verify anything" is a 500.
 
 ```go
-import "github.com/jryannel/authit/authithttp"
-
 claims, err := authithttp.Validate(signer, r)
 if err != nil {
 	w.WriteHeader(authithttp.StatusFor(err)) // 401 or 500 — body is yours
@@ -121,30 +150,44 @@ if err != nil {
 // claims.Subject is the user ID.
 ```
 
-That's the whole package: `BearerToken`, `Validate`, `StatusFor`. No `http.Handler`, no context key, no opinion about your error envelope. Note that `Validate` accepts an impersonation token (`claims.IsImpersonation()`, minted via `superuser.Impersonate`) — it's genuine, so whether acting-as is allowed on a given route is yours to check. If you want revocation to take effect before token expiry, re-resolve the principal from your own storage and treat claims beyond the subject as hints.
+That's the whole package: `BearerToken`, `Validate`, `StatusFor`. No `http.Handler`, no context key, no opinion about your error envelope. Note that `Validate` accepts an impersonation token (`claims.IsImpersonation()`, minted via `superuser.Impersonate`) — it's genuine, so whether acting-as is allowed on a given route is yours to check.
 
-## Database schema
+## Extending authit's tables
 
-authit ships no DDL and no migrations — every package depends only on the `store` interfaces, and your schema is yours. But the required table set shouldn't have to be reverse-engineered from struct definitions one type at a time, so there's a reference:
+You can't add columns to them. Join your own table by user id instead — which is now a real foreign key rather than a convention. authit's `users` row is a credential and nothing more; everything about who someone *is* belongs in your own vertical.
 
-- **[`schema.sql`](schema.sql)** — a complete, non-binding Postgres table set for all fifteen tables behind every `store` interface, annotated at the places where the columns aren't guessable from the Go types. Rename anything; nothing reads this file.
-- **[`sqlbstore/example_test.go`](sqlbstore/example_test.go)** — that same schema wired end to end through `sqlbstore`: a row type and a filled-in `Table[R, T]` for every store in `user.Stores`, ending in a working `user.Service`. It applies `schema.sql` and runs the real flows over it, so the reference schema is checked by the test suite rather than merely asserted.
+That also means authit owns the name `users`. A host that already has a table by that name has a collision to resolve rather than a prefix to set: authit keeps its own names even in a `schema.NewModule` registry, because the generated row structs carry a fixed `TableName` and a name the host could vary would desynchronise them from the migration.
 
-Three things `store/*.go` will not tell you, and the reason the reference exists:
+## Tests
 
-- `LockoutStore` needs **two** tables. The second — the set of currently-locked accounts — has no authit type at all, so nothing in `store/user.go` hints it exists. Implement only the attempts table and it compiles cleanly, then fails at runtime.
-- `store.TOTPSettings` does not use the column names you'd guess: the fields are `Enabled`, `VerifiedAt`, `RecoveryCodeHashes` and `RecoveryCodesUsed` — not `confirmed` and `backup_codes`.
-- `RecoveryCodeHashes` is a `[]string` with no obvious storage. `text[]`, a join table and JSON are all fine; the choice is silently yours and it changes your adapter.
+authit's tests need a real Postgres. There is no in-memory mode, and a missing DSN is a hard failure rather than a skip — "no database, so everything passed" turns a gate into a decoration.
+
+```bash
+docker compose up -d
+export AUTHIT_TEST_POSTGRES=postgres://postgres:authit@127.0.0.1:5459/postgres
+go test ./...
+```
+
+Each test gets a database of its own, created and dropped around it, with authit's declared schema applied through the same `migrate.Diff` path a host's migration generation uses — so a declaration that can't be turned into DDL fails here rather than in a consumer's first migration.
+
+## Regenerating `store/`
+
+`store/` is generated from `authitschema`. After changing a declaration:
+
+```bash
+go generate ./authitschema
+```
 
 ## What's deliberately not included
 
-- **HTTP handlers/routing.** authit is a service layer, not a web framework — wire it into your own router (chi, net/http, huma, ...). `authithttp` is the one concession, and it stops at parsing and validating a bearer token.
+- **Migrations.** authit contributes a declaration, not a sequence. Yours applies it.
+- **HTTP handlers/routing.** Wire it into your own router. `authithttp` is the one concession, and it stops at parsing and validating a bearer token.
 - **Email delivery.** `user.EmailSender` is an interface; bring your own SMTP/API client.
-- **Social/OAuth login, RBAC policy engines, audit logging.** Out of scope for now; `team.Role` and `store.Member.Role` are plain strings you can extend, and `superuser.Impersonate`'s doc comment notes where a host app should hook in its own audit trail.
+- **Social/OAuth login, RBAC policy engines, audit logging.** Out of scope for now; roles are plain strings you can extend, and `superuser.Impersonate`'s doc comment notes where a host app should hook in its own audit trail.
 
 ## Status
 
-Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
+Early. Core flows are implemented and tested against real Postgres (`go test ./...`), but this has not yet been used in a production app.
 
 ## License
 

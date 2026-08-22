@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jryannel/authit/internal/authittest"
 	authitjwt "github.com/jryannel/authit/jwt"
-	"github.com/jryannel/authit/memstore"
 	"github.com/jryannel/authit/superuser"
 )
 
@@ -25,12 +25,12 @@ func newSigner(t *testing.T) authitjwt.Signer {
 
 func newTestService(t *testing.T) *superuser.Service {
 	t.Helper()
-	stores := superuser.Stores{
-		Superusers:    memstore.NewSuperuserStore(),
-		RefreshTokens: memstore.NewSuperuserRefreshTokenStore(),
-		Lockouts:      memstore.NewLockoutStore(),
-	}
-	svc, err := superuser.NewService(stores, newSigner(t), superuser.Config{MaxFailedLoginAttempts: 3})
+	return serviceWithConfig(t, superuser.Config{MaxFailedLoginAttempts: 3}, newSigner(t))
+}
+
+func serviceWithConfig(t *testing.T, cfg superuser.Config, signer authitjwt.Signer) *superuser.Service {
+	t.Helper()
+	svc, err := superuser.NewService(authittest.FreshDB(t), signer, cfg)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -87,14 +87,7 @@ func TestAuthenticateAndRefresh(t *testing.T) {
 func TestAudienceSeparationFromUserPlane(t *testing.T) {
 	signer := newSigner(t)
 
-	suStores := superuser.Stores{
-		Superusers:    memstore.NewSuperuserStore(),
-		RefreshTokens: memstore.NewSuperuserRefreshTokenStore(),
-	}
-	suSvc, err := superuser.NewService(suStores, signer, superuser.Config{})
-	if err != nil {
-		t.Fatalf("superuser.NewService: %v", err)
-	}
+	suSvc := serviceWithConfig(t, superuser.Config{}, signer)
 	ctx := t.Context()
 	if _, err := suSvc.Bootstrap(ctx, "root@example.com", "s3cret!!", "Root"); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
@@ -126,14 +119,7 @@ func TestDeactivateCannotTargetSelf(t *testing.T) {
 
 func TestImpersonateProducesUserPlaneToken(t *testing.T) {
 	signer := newSigner(t)
-	suStores := superuser.Stores{
-		Superusers:    memstore.NewSuperuserStore(),
-		RefreshTokens: memstore.NewSuperuserRefreshTokenStore(),
-	}
-	suSvc, err := superuser.NewService(suStores, signer, superuser.Config{})
-	if err != nil {
-		t.Fatalf("superuser.NewService: %v", err)
-	}
+	suSvc := serviceWithConfig(t, superuser.Config{}, signer)
 	ctx := t.Context()
 	su, err := suSvc.Bootstrap(ctx, "root@example.com", "s3cret!!", "Root")
 	if err != nil {
