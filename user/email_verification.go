@@ -58,6 +58,37 @@ func (s *Service) sendEmailVerification(ctx context.Context, u *store.User) erro
 	return s.emailer.SendEmailVerification(ctx, u.Email, raw)
 }
 
+// MarkEmailVerified marks userID's address verified directly, without
+// minting and redeeming a token. It is the trusted-caller counterpart to
+// VerifyEmail, for the paths where the address is already proven and a
+// round-trip through an email would be ceremony: a seeder provisioning demo
+// or test accounts, a tokenised B2B invite the recipient just followed, or
+// SSO/IdP provisioning that arrives pre-verified.
+//
+// Never call this from an unauthenticated, user-supplied path — it is
+// exactly the check VerifyEmail exists to perform.
+//
+// It is idempotent: on an already-verified user it is a no-op and leaves
+// EmailVerifiedAt at the original time. Any outstanding verification tokens
+// for the user are deleted, so a link already in an inbox can't be redeemed
+// afterwards.
+func (s *Service) MarkEmailVerified(ctx context.Context, userID string) error {
+	u, err := s.stores.Users.GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !u.EmailVerified {
+		now := time.Now()
+		u.EmailVerified = true
+		u.EmailVerifiedAt = &now
+		u.UpdatedAt = now
+		if err := s.stores.Users.UpdateUser(ctx, u); err != nil {
+			return err
+		}
+	}
+	return s.stores.EmailVerifications.DeleteUserEmailVerificationTokens(ctx, u.ID)
+}
+
 // VerifyEmail consumes a verification token and marks the user's email
 // verified.
 func (s *Service) VerifyEmail(ctx context.Context, rawToken string) error {

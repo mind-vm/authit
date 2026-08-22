@@ -9,6 +9,19 @@ import (
 // below is a starting point, not a closed set — host applications may store
 // and check any string value they like; authit's team package only assigns
 // special meaning to RoleOwner (last-owner protections).
+//
+// Roles are per-team by design, and that is a real limit rather than a gap
+// waiting to be filled. A Role only exists attached to a Member, and a Member
+// only exists attached to a Team, so there is no way to express a principal
+// whose identity spans teams — a platform-level auditor, a consultant, a
+// support engineer, a coach working across many client organizations. Such an
+// identity belongs in your own model, joined to authit by user id, not
+// squeezed in here: the workarounds (a synthetic team everyone joins, or a
+// membership row per team) both break as soon as the principal needs to reach
+// a team it holds no membership in.
+//
+// The split that survives: authit answers "who is this", your model answers
+// "what may they do". See the team package's doc comment.
 type Role string
 
 const (

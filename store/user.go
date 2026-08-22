@@ -89,6 +89,15 @@ type EmailVerificationStore interface {
 
 // TOTPSettings holds a user's TOTP secret (encrypted at rest by the caller
 // before it reaches the store) and backup codes (hashed).
+//
+// The field names are worth reading before writing the table: the obvious
+// guesses (`confirmed`, `backup_codes`) are not what this type has. Enabled
+// is the on/off flag, VerifiedAt records when enrollment was confirmed, and
+// the backup codes are RecoveryCodeHashes plus a RecoveryCodesUsed counter.
+//
+// RecoveryCodeHashes is a []string with no single obvious storage: a
+// Postgres text[], a join table and a JSON column are all defensible, and the
+// choice is yours -- see schema.sql, which uses text[].
 type TOTPSettings struct {
 	ID                 string
 	UserID             string
@@ -138,6 +147,18 @@ type FailedLoginAttempt struct {
 }
 
 // LockoutStore tracks failed logins and account lockout state.
+//
+// It needs TWO tables, which is not visible from the types above. One holds
+// FailedLoginAttempt rows (keyed by email, per that type's doc). The second
+// holds the set of currently-locked accounts, and has no canonical authit
+// type at all: LockAccount, IsAccountLocked and UnlockAccount are
+// insert/exists/delete over a set of user ids, not CRUD over a struct, so its
+// shape is entirely yours. All authit requires is that its user-id column is
+// UNIQUE, so locking an already-locked account is idempotent rather than an
+// error.
+//
+// Implementing only the attempts table compiles cleanly and fails at runtime.
+// See schema.sql (`account_locks`).
 type LockoutStore interface {
 	RecordFailedLoginAttempt(ctx context.Context, a *FailedLoginAttempt) error
 	CountRecentFailedLoginAttempts(ctx context.Context, email string, since time.Time) (int, error)

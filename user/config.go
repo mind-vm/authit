@@ -2,6 +2,29 @@ package user
 
 import "time"
 
+// EmailVerificationPolicy decides whether Authenticate refuses a login from
+// an account whose email address has not been verified yet.
+//
+// The zero value is EmailVerificationRequired, so a Config that says nothing
+// about this gets the strict behaviour.
+type EmailVerificationPolicy int
+
+const (
+	// EmailVerificationRequired refuses to authenticate a user whose
+	// address is not verified, returning ErrEmailNotVerified. This is the
+	// default, and the right choice for a self-serve signup where the
+	// address is otherwise unproven.
+	EmailVerificationRequired EmailVerificationPolicy = iota
+	// EmailVerificationOptional lets an unverified address log in. It is
+	// for hosts whose signup path already proves the address by other
+	// means — an emailed, tokenised B2B invite; SSO/IdP provisioning that
+	// arrives pre-verified — and for seeded demo/test accounts. Verified
+	// state is still tracked on the user, so the host can still gate its
+	// own features on User.EmailVerified; only login stops depending on
+	// it.
+	EmailVerificationOptional
+)
+
 // Config tunes the user package's flows. Zero-value fields are replaced
 // with sane defaults by NewService.
 type Config struct {
@@ -31,6 +54,9 @@ type Config struct {
 	TOTPEncryptionKey []byte
 	// BackupCodeCount is how many backup codes are generated on 2FA setup.
 	BackupCodeCount int
+	// EmailVerification decides whether Authenticate gates login on
+	// User.EmailVerified. Defaults to EmailVerificationRequired.
+	EmailVerification EmailVerificationPolicy
 }
 
 func (c Config) withDefaults() Config {
