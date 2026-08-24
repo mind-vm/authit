@@ -21,8 +21,13 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jryannel/sqlb"
+	"github.com/jryannel/authit/store"
 )
+
+// Stores groups the persistence ports the device package needs.
+type Stores struct {
+	Authorizations store.DeviceAuthorizationStore
+}
 
 // Config tunes the device package's flows.
 type Config struct {
@@ -65,15 +70,14 @@ type Authorization struct {
 
 // Service implements the device-authorization-grant flow.
 type Service struct {
-	db  *sqlb.DB
-	cfg Config
+	stores Stores
+	cfg    Config
 }
 
-// NewService constructs a Service over db, which must be backed by a database
-// carrying authit's tables — see authitschema.Declare.
-func NewService(db *sqlb.DB, cfg Config) (*Service, error) {
-	if db == nil {
-		return nil, errors.New("authit/device: db is required")
+// NewService constructs a Service.
+func NewService(stores Stores, cfg Config) (*Service, error) {
+	if stores.Authorizations == nil {
+		return nil, errors.New("authit/device: Stores.Authorizations is required")
 	}
-	return &Service{db: db, cfg: cfg.withDefaults()}, nil
+	return &Service{stores: stores, cfg: cfg.withDefaults()}, nil
 }

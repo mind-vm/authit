@@ -8,7 +8,6 @@ import (
 
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
-	"github.com/jryannel/sqlb"
 )
 
 // CreateToken issues a new personal access token for userID. Returns the
@@ -31,38 +30,40 @@ func (s *Service) CreateToken(ctx context.Context, userID, name string, scopes [
 	}
 	raw = s.cfg.Prefix + raw
 
-	// ID and CreatedAt are left zero so the column defaults assign them; the
-	// inserted row comes back carrying what the database actually stored.
-	row := store.PersonalAccessToken{
-		UserID: userID, Name: name, TokenHash: authitcrypto.HashToken(raw),
-		Scopes: scopes, ExpiresAt: expiresAt,
-	}
-	inserted, err := sqlb.InsertRows(&row).Exec(ctx, s.db)
+	id, err := authitcrypto.NewID()
 	if err != nil {
 		return "", store.PersonalAccessToken{}, err
 	}
-	return raw, inserted[0], nil
+	t := &store.PersonalAccessToken{
+		ID: id, UserID: userID, Name: name, TokenHash: authitcrypto.HashToken(raw),
+		Scopes: scopes, ExpiresAt: expiresAt, CreatedAt: time.Now(),
+	}
+	if err := s.stores.Tokens.CreatePersonalAccessToken(ctx, t); err != nil {
+		return "", store.PersonalAccessToken{}, err
+	}
+	return raw, *t, nil
 }
 
 // ListTokens lists every token belonging to userID (including expired or
 // revoked ones, so a UI can show their status — filter by ExpiresAt/
 // RevokedAt as needed).
 func (s *Service) ListTokens(ctx context.Context, userID string) ([]store.PersonalAccessToken, error) {
-	return sqlb.Query[store.PersonalAccessToken]().
-		Where(store.PersonalAccessTokenCols.UserID.Eq(userID)).
-		All(ctx, s.db)
+	tokens, err := s.stores.Tokens.ListPersonalAccessTokensByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.PersonalAccessToken, len(tokens))
+	for i, t := range tokens {
+		out[i] = *t
+	}
+	return out, nil
 }
 
 // RevokeToken revokes a token, scoped to userID so a caller can't revoke
 // another user's token.
 func (s *Service) RevokeToken(ctx context.Context, userID, tokenID string) error {
-	t, err := sqlb.Query[store.PersonalAccessToken]().
-		Where(store.PersonalAccessTokenCols.ID.Eq(tokenID)).
-		One(ctx, s.db)
+	t, err := s.stores.Tokens.GetPersonalAccessToken(ctx, tokenID)
 	if err != nil {
-		if errors.Is(err, sqlb.ErrNotFound) {
-			return ErrInvalidToken
-		}
 		return err
 	}
 	if t.UserID != userID {
@@ -72,11 +73,8 @@ func (s *Service) RevokeToken(ctx context.Context, userID, tokenID string) error
 		return nil
 	}
 	now := time.Now()
-	_, err = store.UpdatePersonalAccessToken().
-		SetRevokedAt(&now).
-		Where(store.PersonalAccessTokenCols.ID.Eq(tokenID)).
-		Stmt().Exec(ctx, s.db)
-	return err
+	t.RevokedAt = &now
+	return s.stores.Tokens.UpdatePersonalAccessToken(ctx, t)
 }
 
 // Resolve validates a raw bearer token and returns the record it maps to,
@@ -84,11 +82,9 @@ func (s *Service) RevokeToken(ctx context.Context, userID, tokenID string) error
 // does not fail the resolution). Callers typically check HasScope against
 // the result afterward.
 func (s *Service) Resolve(ctx context.Context, rawToken string) (store.PersonalAccessToken, error) {
-	t, err := sqlb.Query[store.PersonalAccessToken]().
-		Where(store.PersonalAccessTokenCols.TokenHash.Eq(authitcrypto.HashToken(rawToken))).
-		One(ctx, s.db)
+	t, err := s.stores.Tokens.GetPersonalAccessTokenByHash(ctx, authitcrypto.HashToken(rawToken))
 	if err != nil {
-		if errors.Is(err, sqlb.ErrNotFound) {
+		if errors.Is(err, store.ErrNotFound) {
 			return store.PersonalAccessToken{}, ErrInvalidToken
 		}
 		return store.PersonalAccessToken{}, err
@@ -101,15 +97,10 @@ func (s *Service) Resolve(ctx context.Context, rawToken string) (store.PersonalA
 	}
 
 	now := time.Now()
-	// Best-effort: a token that resolved is resolved, whether or not we
-	// managed to record that it was used.
-	_, _ = store.UpdatePersonalAccessToken().
-		SetLastUsedAt(&now).
-		Where(store.PersonalAccessTokenCols.ID.Eq(t.ID)).
-		Stmt().Exec(ctx, s.db)
 	t.LastUsedAt = &now
+	_ = s.stores.Tokens.UpdatePersonalAccessToken(ctx, t)
 
-	return t, nil
+	return *t, nil
 }
 
 // HasScope reports whether t was granted scope.

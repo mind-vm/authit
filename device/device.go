@@ -8,7 +8,6 @@ import (
 
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
-	"github.com/jryannel/sqlb"
 )
 
 // StartDeviceAuthorization begins a new device-authorization-grant request
@@ -26,13 +25,18 @@ func (s *Service) StartDeviceAuthorization(ctx context.Context, clientID, scope 
 		return Authorization{}, err
 	}
 
-	row := store.DeviceAuthorization{
-		DeviceCodeHash: deviceCodeHash, UserCode: userCode,
-		ClientID: clientID, Scope: scope, Status: store.DeviceAuthorizationStatusPending,
-		ExpiresAt:       time.Now().Add(s.cfg.DeviceCodeTTL),
-		IntervalSeconds: int32(s.cfg.PollInterval.Seconds()),
+	id, err := authitcrypto.NewID()
+	if err != nil {
+		return Authorization{}, err
 	}
-	if _, err := sqlb.InsertRows(&row).Exec(ctx, s.db); err != nil {
+	now := time.Now()
+	d := &store.DeviceAuthorization{
+		ID: id, DeviceCodeHash: deviceCodeHash, UserCode: userCode,
+		ClientID: clientID, Scope: scope, Status: store.DeviceAuthorizationPending,
+		ExpiresAt: now.Add(s.cfg.DeviceCodeTTL), IntervalSeconds: int(s.cfg.PollInterval.Seconds()),
+		CreatedAt: now,
+	}
+	if err := s.stores.Authorizations.CreateDeviceAuthorization(ctx, d); err != nil {
 		return Authorization{}, err
 	}
 
@@ -50,13 +54,7 @@ func (s *Service) uniqueUserCode(ctx context.Context) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		taken, err := sqlb.Query[store.DeviceAuthorization]().
-			Where(store.DeviceAuthorizationCols.UserCode.Eq(code)).
-			Exists(ctx, s.db)
-		if err != nil {
-			return "", err
-		}
-		if !taken {
+		if _, err := s.stores.Authorizations.GetDeviceAuthorizationByUserCode(ctx, code); errors.Is(err, store.ErrNotFound) {
 			return code, nil
 		}
 	}
@@ -72,12 +70,9 @@ func (s *Service) ApproveDeviceAuthorization(ctx context.Context, callerUserID, 
 	if err != nil {
 		return err
 	}
-	_, err = store.UpdateDeviceAuthorization().
-		SetStatus(store.DeviceAuthorizationStatusApproved).
-		SetUserID(&callerUserID).
-		Where(store.DeviceAuthorizationCols.ID.Eq(d.ID)).
-		Stmt().Exec(ctx, s.db)
-	return err
+	d.Status = store.DeviceAuthorizationApproved
+	d.UserID = &callerUserID
+	return s.stores.Authorizations.UpdateDeviceAuthorization(ctx, d)
 }
 
 // DenyDeviceAuthorization marks the device authorization identified by
@@ -87,25 +82,20 @@ func (s *Service) DenyDeviceAuthorization(ctx context.Context, userCode string) 
 	if err != nil {
 		return err
 	}
-	_, err = store.UpdateDeviceAuthorization().
-		SetStatus(store.DeviceAuthorizationStatusDenied).
-		Where(store.DeviceAuthorizationCols.ID.Eq(d.ID)).
-		Stmt().Exec(ctx, s.db)
-	return err
+	d.Status = store.DeviceAuthorizationDenied
+	return s.stores.Authorizations.UpdateDeviceAuthorization(ctx, d)
 }
 
-func (s *Service) pendingByUserCode(ctx context.Context, userCode string) (store.DeviceAuthorization, error) {
-	d, err := sqlb.Query[store.DeviceAuthorization]().
-		Where(store.DeviceAuthorizationCols.UserCode.Eq(userCode)).
-		One(ctx, s.db)
+func (s *Service) pendingByUserCode(ctx context.Context, userCode string) (*store.DeviceAuthorization, error) {
+	d, err := s.stores.Authorizations.GetDeviceAuthorizationByUserCode(ctx, userCode)
 	if err != nil {
-		if errors.Is(err, sqlb.ErrNotFound) {
-			return store.DeviceAuthorization{}, ErrInvalidUserCode
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrInvalidUserCode
 		}
-		return store.DeviceAuthorization{}, err
+		return nil, err
 	}
-	if d.Status != store.DeviceAuthorizationStatusPending || time.Now().After(d.ExpiresAt) {
-		return store.DeviceAuthorization{}, ErrInvalidUserCode
+	if d.Status != store.DeviceAuthorizationPending || time.Now().After(d.ExpiresAt) {
+		return nil, ErrInvalidUserCode
 	}
 	return d, nil
 }
@@ -118,11 +108,9 @@ func (s *Service) pendingByUserCode(ctx context.Context, userCode string) (store
 // terminal outcome (approved or denied), the record is deleted so it
 // cannot be polled again.
 func (s *Service) PollDeviceToken(ctx context.Context, rawDeviceCode string) (userID, scope string, err error) {
-	d, err := sqlb.Query[store.DeviceAuthorization]().
-		Where(store.DeviceAuthorizationCols.DeviceCodeHash.Eq(authitcrypto.HashToken(rawDeviceCode))).
-		One(ctx, s.db)
+	d, err := s.stores.Authorizations.GetDeviceAuthorizationByDeviceCodeHash(ctx, authitcrypto.HashToken(rawDeviceCode))
 	if err != nil {
-		if errors.Is(err, sqlb.ErrNotFound) {
+		if errors.Is(err, store.ErrNotFound) {
 			return "", "", ErrExpiredToken
 		}
 		return "", "", err
@@ -130,47 +118,31 @@ func (s *Service) PollDeviceToken(ctx context.Context, rawDeviceCode string) (us
 
 	now := time.Now()
 	if now.After(d.ExpiresAt) {
-		s.discard(ctx, d.ID)
+		_ = s.stores.Authorizations.DeleteDeviceAuthorization(ctx, d.ID)
 		return "", "", ErrExpiredToken
 	}
 
 	interval := time.Duration(d.IntervalSeconds) * time.Second
 	if d.LastPolledAt != nil && now.Sub(*d.LastPolledAt) < interval {
-		// The increment is permanent, per RFC 8628 §3.5: a client that polled
-		// too fast once is told to slow down for the rest of this request's
-		// life, not just for this poll.
-		_, _ = store.UpdateDeviceAuthorization().
-			SetIntervalSeconds(d.IntervalSeconds+int32(s.cfg.SlowDownIncrement.Seconds())).
-			SetLastPolledAt(&now).
-			Where(store.DeviceAuthorizationCols.ID.Eq(d.ID)).
-			Stmt().Exec(ctx, s.db)
+		d.IntervalSeconds += int(s.cfg.SlowDownIncrement.Seconds())
+		d.LastPolledAt = &now
+		_ = s.stores.Authorizations.UpdateDeviceAuthorization(ctx, d)
 		return "", "", ErrSlowDown
 	}
 
 	switch d.Status {
-	case store.DeviceAuthorizationStatusDenied:
-		s.discard(ctx, d.ID)
+	case store.DeviceAuthorizationDenied:
+		_ = s.stores.Authorizations.DeleteDeviceAuthorization(ctx, d.ID)
 		return "", "", ErrAccessDenied
-	case store.DeviceAuthorizationStatusApproved:
-		s.discard(ctx, d.ID)
+	case store.DeviceAuthorizationApproved:
+		_ = s.stores.Authorizations.DeleteDeviceAuthorization(ctx, d.ID)
 		if d.UserID == nil {
 			return "", "", ErrExpiredToken
 		}
 		return *d.UserID, d.Scope, nil
 	default: // pending
-		_, _ = store.UpdateDeviceAuthorization().
-			SetLastPolledAt(&now).
-			Where(store.DeviceAuthorizationCols.ID.Eq(d.ID)).
-			Stmt().Exec(ctx, s.db)
+		d.LastPolledAt = &now
+		_ = s.stores.Authorizations.UpdateDeviceAuthorization(ctx, d)
 		return "", "", ErrAuthorizationPending
 	}
-}
-
-// discard removes a resolved authorization so it cannot be polled twice.
-// Best-effort: the caller has already decided the outcome, and a row that
-// outlives its own expiry is refused by the expiry check anyway.
-func (s *Service) discard(ctx context.Context, id string) {
-	_, _ = sqlb.DeleteRows[store.DeviceAuthorization]().
-		Where(store.DeviceAuthorizationCols.ID.Eq(id)).
-		Exec(ctx, s.db)
 }

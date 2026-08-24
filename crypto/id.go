@@ -2,13 +2,9 @@ package crypto
 
 import "crypto/rand"
 
-// NewID returns a random UUIDv4 string.
-//
-// authit's own tables no longer use it: their primary keys default to
-// gen_random_uuid() and the database assigns them, so a row comes back
-// carrying the id it was actually stored under. It stays exported because it
-// is a correct, dependency-free UUIDv4 and a host that wants one for its own
-// records may as well not add a module for it.
+// NewID returns a random UUIDv4 string. authit's service packages use this
+// to assign IDs before handing records to a Store, so stores never need to
+// generate identifiers themselves.
 func NewID() (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {

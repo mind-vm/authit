@@ -7,19 +7,13 @@ import (
 
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
-	"github.com/jryannel/sqlb"
 )
 
 // ChangePassword updates an authenticated user's password after verifying
 // their current one.
 func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, newPassword string) error {
-	u, err := sqlb.Query[store.User]().
-		Where(store.UserCols.ID.Eq(userID)).
-		One(ctx, s.db)
+	u, err := s.stores.Users.GetUserByID(ctx, userID)
 	if err != nil {
-		if errors.Is(err, sqlb.ErrNotFound) {
-			return ErrNotFound
-		}
 		return err
 	}
 	if !authitcrypto.CheckPassword(currentPassword, u.PasswordHash) {
@@ -29,12 +23,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	if err != nil {
 		return err
 	}
-	_, err = store.UpdateUser().
-		SetPasswordHash(hash).
-		SetUpdatedAt(time.Now()).
-		Where(store.UserCols.ID.Eq(userID)).
-		Stmt().Exec(ctx, s.db)
-	return err
+	u.PasswordHash = hash
+	u.UpdatedAt = time.Now()
+	return s.stores.Users.UpdateUser(ctx, u)
 }
 
 // RequestPasswordReset generates a reset token and emails it to the given
@@ -42,34 +33,28 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 // registered, so callers can return the same response either way and avoid
 // leaking account existence.
 func (s *Service) RequestPasswordReset(ctx context.Context, email string) error {
-	u, err := sqlb.Query[store.User]().
-		Where(store.UserCols.Email.Eq(email)).
-		One(ctx, s.db)
+	u, err := s.stores.Users.GetUserByEmail(ctx, email)
 	if err != nil {
-		if errors.Is(err, sqlb.ErrNotFound) {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil
 		}
 		return err
 	}
 
+	if err := s.stores.PasswordResets.DeleteUserPasswordResetTokens(ctx, u.ID); err != nil {
+		return err
+	}
 	raw, hash, err := authitcrypto.GenerateOpaqueToken()
 	if err != nil {
 		return err
 	}
-	if err := s.db.WithTx(ctx, func(ctx context.Context, tx *sqlb.DB) error {
-		// Superseding the outstanding tokens and issuing the replacement are
-		// one unit of work, so a failure cannot leave the user with none.
-		if _, err := sqlb.DeleteRows[store.PasswordResetToken]().
-			Where(store.PasswordResetTokenCols.UserID.Eq(u.ID)).
-			Exec(ctx, tx); err != nil {
-			return err
-		}
-		row := store.PasswordResetToken{
-			UserID: u.ID, TokenHash: hash,
-			ExpiresAt: time.Now().Add(s.cfg.PasswordResetTTL),
-		}
-		_, err := sqlb.InsertRows(&row).Exec(ctx, tx)
+	id, err := authitcrypto.NewID()
+	if err != nil {
 		return err
+	}
+	now := time.Now()
+	if err := s.stores.PasswordResets.CreatePasswordResetToken(ctx, &store.PasswordResetToken{
+		ID: id, UserID: u.ID, TokenHash: hash, ExpiresAt: now.Add(s.cfg.PasswordResetTTL), CreatedAt: now,
 	}); err != nil {
 		return err
 	}
@@ -80,11 +65,9 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 // without consuming it — used to give the UI an early error before the
 // user types a new password.
 func (s *Service) ValidatePasswordResetToken(ctx context.Context, rawToken string) error {
-	t, err := sqlb.Query[store.PasswordResetToken]().
-		Where(store.PasswordResetTokenCols.TokenHash.Eq(authitcrypto.HashToken(rawToken))).
-		One(ctx, s.db)
+	t, err := s.stores.PasswordResets.GetPasswordResetTokenByHash(ctx, authitcrypto.HashToken(rawToken))
 	if err != nil {
-		if errors.Is(err, sqlb.ErrNotFound) {
+		if errors.Is(err, store.ErrNotFound) {
 			return ErrInvalidToken
 		}
 		return err
@@ -96,50 +79,34 @@ func (s *Service) ValidatePasswordResetToken(ctx context.Context, rawToken strin
 }
 
 // ResetPassword consumes a password reset token and sets a new password.
-// Every session for the user is revoked, forcing re-login everywhere.
+// Every other session for the user is revoked, forcing re-login everywhere
+// else.
 func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword string) error {
+	t, err := s.stores.PasswordResets.GetPasswordResetTokenByHash(ctx, authitcrypto.HashToken(rawToken))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrInvalidToken
+		}
+		return err
+	}
+	if t.UsedAt != nil || time.Now().After(t.ExpiresAt) {
+		return ErrInvalidToken
+	}
+	u, err := s.stores.Users.GetUserByID(ctx, t.UserID)
+	if err != nil {
+		return err
+	}
 	hash, err := authitcrypto.HashPassword(newPassword)
 	if err != nil {
 		return err
 	}
-	// All four writes are one unit of work. A password changed without the
-	// sessions being revoked is the case this exists to prevent: the whole
-	// point of a reset is that whoever held the old credential is locked out.
-	return s.db.WithTx(ctx, func(ctx context.Context, tx *sqlb.DB) error {
-		t, err := sqlb.Query[store.PasswordResetToken]().
-			Where(store.PasswordResetTokenCols.TokenHash.Eq(authitcrypto.HashToken(rawToken))).
-			One(ctx, tx)
-		if err != nil {
-			if errors.Is(err, sqlb.ErrNotFound) {
-				return ErrInvalidToken
-			}
-			return err
-		}
-		if t.UsedAt != nil || time.Now().After(t.ExpiresAt) {
-			return ErrInvalidToken
-		}
-
-		now := time.Now()
-		if _, err := store.UpdateUser().
-			SetPasswordHash(hash).
-			SetUpdatedAt(now).
-			Where(store.UserCols.ID.Eq(t.UserID)).
-			Stmt().Exec(ctx, tx); err != nil {
-			return err
-		}
-		if _, err := store.UpdatePasswordResetToken().
-			SetUsedAt(&now).
-			Where(store.PasswordResetTokenCols.ID.Eq(t.ID)).
-			Stmt().Exec(ctx, tx); err != nil {
-			return err
-		}
-		_, err = store.UpdateRefreshToken().
-			SetRevokedAt(&now).
-			Where(
-				store.RefreshTokenCols.UserID.Eq(t.UserID),
-				store.RefreshTokenCols.RevokedAt.IsNull(),
-			).
-			Stmt().Exec(ctx, tx)
+	u.PasswordHash = hash
+	u.UpdatedAt = time.Now()
+	if err := s.stores.Users.UpdateUser(ctx, u); err != nil {
 		return err
-	})
+	}
+	if err := s.stores.PasswordResets.MarkPasswordResetTokenUsed(ctx, t.ID); err != nil {
+		return err
+	}
+	return s.stores.RefreshTokens.RevokeAllUserRefreshTokens(ctx, u.ID)
 }

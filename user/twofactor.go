@@ -7,13 +7,18 @@ import (
 
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
-	"github.com/jryannel/sqlb"
 )
 
 // BeginTwoFactorSetup generates a new TOTP secret for userID and stores it
 // (encrypted) with Enabled=false. The caller must call
 // ConfirmTwoFactorSetup with a valid code before 2FA takes effect.
 func (s *Service) BeginTwoFactorSetup(ctx context.Context, userID, accountEmail string) (TwoFactorSetup, error) {
+	if existing, err := s.stores.TOTP.GetTOTPSettingsByUserID(ctx, userID); err == nil && existing.Enabled {
+		return TwoFactorSetup{}, ErrTwoFactorEnabled
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return TwoFactorSetup{}, err
+	}
+
 	key, err := authitcrypto.GenerateTOTPSecret(s.cfg.TOTPIssuer, accountEmail)
 	if err != nil {
 		return TwoFactorSetup{}, err
@@ -23,43 +28,35 @@ func (s *Service) BeginTwoFactorSetup(ctx context.Context, userID, accountEmail 
 		return TwoFactorSetup{}, err
 	}
 
-	err = s.db.WithTx(ctx, func(ctx context.Context, tx *sqlb.DB) error {
-		existing, err := sqlb.Query[store.TotpSetting]().
-			Where(store.TotpSettingCols.UserID.Eq(userID)).
-			One(ctx, tx)
-		switch {
-		case err == nil && existing.Enabled:
-			// Re-enrolling would silently invalidate the authenticator the
-			// user is currently relying on. Disabling first is deliberate.
-			return ErrTwoFactorEnabled
-		case err == nil:
-			// An unconfirmed enrollment from an abandoned attempt: replace its
-			// secret rather than accumulating rows the unique index forbids.
-			_, err = store.UpdateTotpSetting().
-				SetSecretEncrypted(encrypted).
-				SetUpdatedAt(time.Now()).
-				Where(store.TotpSettingCols.UserID.Eq(userID)).
-				Stmt().Exec(ctx, tx)
-			return err
-		case errors.Is(err, sqlb.ErrNotFound):
-			row := store.TotpSetting{UserID: userID, SecretEncrypted: encrypted}
-			_, err = sqlb.InsertRows(&row).Exec(ctx, tx)
-			return err
-		default:
-			return err
-		}
-	})
+	id, err := authitcrypto.NewID()
 	if err != nil {
 		return TwoFactorSetup{}, err
 	}
+	now := time.Now()
+	settings := &store.TOTPSettings{
+		ID: id, UserID: userID, SecretEncrypted: encrypted, Enabled: false,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.upsertTOTPSettings(ctx, userID, settings); err != nil {
+		return TwoFactorSetup{}, err
+	}
 	return TwoFactorSetup{Secret: key.Secret(), OTPAuthURL: key.URL()}, nil
+}
+
+func (s *Service) upsertTOTPSettings(ctx context.Context, userID string, settings *store.TOTPSettings) error {
+	if _, err := s.stores.TOTP.GetTOTPSettingsByUserID(ctx, userID); err == nil {
+		return s.stores.TOTP.UpdateTOTPSettings(ctx, settings)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	return s.stores.TOTP.CreateTOTPSettings(ctx, settings)
 }
 
 // ConfirmTwoFactorSetup verifies a code against the pending secret from
 // BeginTwoFactorSetup, enables 2FA, and returns freshly generated backup
 // codes (plaintext, shown once).
 func (s *Service) ConfirmTwoFactorSetup(ctx context.Context, userID, code string) (TwoFactorEnrollment, error) {
-	settings, secret, err := s.decryptedTOTP(ctx, s.db, userID)
+	settings, secret, err := s.getDecryptedTOTPSettings(ctx, userID)
 	if err != nil {
 		return TwoFactorEnrollment{}, err
 	}
@@ -67,19 +64,22 @@ func (s *Service) ConfirmTwoFactorSetup(ctx context.Context, userID, code string
 		return TwoFactorEnrollment{}, ErrInvalidTwoFactor
 	}
 
-	codes, hashes, err := s.newBackupCodes()
+	codes, err := authitcrypto.GenerateBackupCodes(s.cfg.BackupCodeCount)
 	if err != nil {
 		return TwoFactorEnrollment{}, err
 	}
+	hashes := make([]string, len(codes))
+	for i, c := range codes {
+		hashes[i] = authitcrypto.HashBackupCode(c)
+	}
+
 	now := time.Now()
-	if _, err := store.UpdateTotpSetting().
-		SetEnabled(true).
-		SetVerifiedAt(&now).
-		SetRecoveryCodeHashes(hashes).
-		SetRecoveryCodesUsed(0).
-		SetUpdatedAt(now).
-		Where(store.TotpSettingCols.ID.Eq(settings.ID)).
-		Stmt().Exec(ctx, s.db); err != nil {
+	settings.Enabled = true
+	settings.VerifiedAt = &now
+	settings.RecoveryCodeHashes = hashes
+	settings.RecoveryCodesUsed = 0
+	settings.UpdatedAt = now
+	if err := s.stores.TOTP.UpdateTOTPSettings(ctx, settings); err != nil {
 		return TwoFactorEnrollment{}, err
 	}
 	return TwoFactorEnrollment{BackupCodes: codes}, nil
@@ -88,69 +88,50 @@ func (s *Service) ConfirmTwoFactorSetup(ctx context.Context, userID, code string
 // DisableTwoFactor turns off 2FA, accepting either a TOTP code or a backup
 // code (so a user who lost their authenticator can still disable it).
 func (s *Service) DisableTwoFactor(ctx context.Context, userID, code string) error {
-	return s.db.WithTx(ctx, func(ctx context.Context, tx *sqlb.DB) error {
-		settings, secret, err := s.decryptedTOTP(ctx, tx, userID)
-		if err != nil {
-			return err
-		}
-		if !authitcrypto.ValidateTOTPCode(secret, code) && !consumeBackupCode(&settings, code) {
-			return ErrInvalidTwoFactor
-		}
-		_, err = sqlb.DeleteRows[store.TotpSetting]().
-			Where(store.TotpSettingCols.UserID.Eq(userID)).
-			Exec(ctx, tx)
+	settings, secret, err := s.getDecryptedTOTPSettings(ctx, userID)
+	if err != nil {
 		return err
-	})
+	}
+	if !authitcrypto.ValidateTOTPCode(secret, code) && !consumeBackupCode(settings, code) {
+		return ErrInvalidTwoFactor
+	}
+	return s.stores.TOTP.DeleteTOTPSettings(ctx, userID)
 }
 
 // RegenerateBackupCodes invalidates existing backup codes and issues a new
 // set. Requires a valid TOTP code (not a backup code, to stop a stolen
 // backup code from being used to mint fresh ones).
 func (s *Service) RegenerateBackupCodes(ctx context.Context, userID, totpCode string) ([]string, error) {
-	settings, secret, err := s.decryptedTOTP(ctx, s.db, userID)
+	settings, secret, err := s.getDecryptedTOTPSettings(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 	if !authitcrypto.ValidateTOTPCode(secret, totpCode) {
 		return nil, ErrInvalidTwoFactor
 	}
-	codes, hashes, err := s.newBackupCodes()
+	codes, err := authitcrypto.GenerateBackupCodes(s.cfg.BackupCodeCount)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := store.UpdateTotpSetting().
-		SetRecoveryCodeHashes(hashes).
-		SetRecoveryCodesUsed(0).
-		SetUpdatedAt(time.Now()).
-		Where(store.TotpSettingCols.ID.Eq(settings.ID)).
-		Stmt().Exec(ctx, s.db); err != nil {
+	hashes := make([]string, len(codes))
+	for i, c := range codes {
+		hashes[i] = authitcrypto.HashBackupCode(c)
+	}
+	settings.RecoveryCodeHashes = hashes
+	settings.RecoveryCodesUsed = 0
+	settings.UpdatedAt = time.Now()
+	if err := s.stores.TOTP.UpdateTOTPSettings(ctx, settings); err != nil {
 		return nil, err
 	}
 	return codes, nil
 }
 
-// newBackupCodes generates a fresh set, returning the plaintext codes to show
-// the user once and the hashes to store.
-func (s *Service) newBackupCodes() (codes, hashes []string, err error) {
-	codes, err = authitcrypto.GenerateBackupCodes(s.cfg.BackupCodeCount)
-	if err != nil {
-		return nil, nil, err
-	}
-	hashes = make([]string, len(codes))
-	for i, c := range codes {
-		hashes[i] = authitcrypto.HashBackupCode(c)
-	}
-	return codes, hashes, nil
-}
-
 // TwoFactorStatus reports whether 2FA is enabled and how many backup codes
 // remain.
 func (s *Service) TwoFactorStatus(ctx context.Context, userID string) (TwoFactorStatus, error) {
-	settings, err := sqlb.Query[store.TotpSetting]().
-		Where(store.TotpSettingCols.UserID.Eq(userID)).
-		One(ctx, s.db)
+	settings, err := s.stores.TOTP.GetTOTPSettingsByUserID(ctx, userID)
 	if err != nil {
-		if errors.Is(err, sqlb.ErrNotFound) {
+		if errors.Is(err, store.ErrNotFound) {
 			return TwoFactorStatus{}, nil
 		}
 		return TwoFactorStatus{}, err
@@ -162,28 +143,26 @@ func (s *Service) TwoFactorStatus(ctx context.Context, userID string) (TwoFactor
 	}, nil
 }
 
-func (s *Service) decryptedTOTP(ctx context.Context, db *sqlb.DB, userID string) (store.TotpSetting, string, error) {
-	settings, err := sqlb.Query[store.TotpSetting]().
-		Where(store.TotpSettingCols.UserID.Eq(userID)).
-		One(ctx, db)
+func (s *Service) getDecryptedTOTPSettings(ctx context.Context, userID string) (*store.TOTPSettings, string, error) {
+	settings, err := s.stores.TOTP.GetTOTPSettingsByUserID(ctx, userID)
 	if err != nil {
-		if errors.Is(err, sqlb.ErrNotFound) {
-			return store.TotpSetting{}, "", ErrTwoFactorNotEnabled
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, "", ErrTwoFactorNotEnabled
 		}
-		return store.TotpSetting{}, "", err
+		return nil, "", err
 	}
 	secret, err := authitcrypto.DecryptSecret(s.cfg.TOTPEncryptionKey, settings.SecretEncrypted)
 	if err != nil {
-		return store.TotpSetting{}, "", err
+		return nil, "", err
 	}
 	return settings, secret, nil
 }
 
 // consumeBackupCode checks code against settings' stored hashes and, on a
 // match, removes it (single use) and bumps the used counter. It mutates
-// settings in place but does not persist the change — callers that need the
-// consumption to stick must write settings back themselves.
-func consumeBackupCode(settings *store.TotpSetting, code string) bool {
+// settings in place but does not persist the change — callers that need
+// the consumption to stick must call UpdateTOTPSettings themselves.
+func consumeBackupCode(settings *store.TOTPSettings, code string) bool {
 	hash := authitcrypto.HashBackupCode(code)
 	for i, h := range settings.RecoveryCodeHashes {
 		if h == hash {
@@ -202,11 +181,14 @@ func (s *Service) createPendingTwoFactorSession(ctx context.Context, userID stri
 	if err != nil {
 		return "", err
 	}
-	row := store.PendingTwoFactorSession{
-		UserID: userID, TokenHash: hash,
-		ExpiresAt: time.Now().Add(s.cfg.PendingTwoFactorTTL),
+	id, err := authitcrypto.NewID()
+	if err != nil {
+		return "", err
 	}
-	if _, err := sqlb.InsertRows(&row).Exec(ctx, s.db); err != nil {
+	now := time.Now()
+	if err := s.stores.PendingTwoFactor.CreatePendingTwoFactorSession(ctx, &store.PendingTwoFactorSession{
+		ID: id, UserID: userID, TokenHash: hash, ExpiresAt: now.Add(s.cfg.PendingTwoFactorTTL), CreatedAt: now,
+	}); err != nil {
 		return "", err
 	}
 	return raw, nil
@@ -216,66 +198,41 @@ func (s *Service) createPendingTwoFactorSession(ctx context.Context, userID stri
 // RequiresTwoFactor: it exchanges the pending token plus a valid TOTP or
 // backup code for a real token pair.
 func (s *Service) VerifyTwoFactorLogin(ctx context.Context, pendingToken, code, userAgent, ipAddress string) (AuthResult, error) {
-	var result AuthResult
-	err := s.db.WithTx(ctx, func(ctx context.Context, tx *sqlb.DB) error {
-		pending, err := sqlb.Query[store.PendingTwoFactorSession]().
-			Where(store.PendingTwoFactorSessionCols.TokenHash.Eq(authitcrypto.HashToken(pendingToken))).
-			One(ctx, tx)
-		if err != nil {
-			if errors.Is(err, sqlb.ErrNotFound) {
-				return ErrInvalidToken
-			}
-			return err
+	pending, err := s.stores.PendingTwoFactor.GetPendingTwoFactorSessionByHash(ctx, authitcrypto.HashToken(pendingToken))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return AuthResult{}, ErrInvalidToken
 		}
-		if time.Now().After(pending.ExpiresAt) {
-			return ErrInvalidToken
-		}
+		return AuthResult{}, err
+	}
+	if time.Now().After(pending.ExpiresAt) {
+		return AuthResult{}, ErrInvalidToken
+	}
 
-		settings, secret, err := s.decryptedTOTP(ctx, tx, pending.UserID)
-		if err != nil {
-			return err
-		}
-		valid := authitcrypto.ValidateTOTPCode(secret, code)
-		if !valid && consumeBackupCode(&settings, code) {
-			valid = true
-			// Spending the backup code, consuming the pending session and
-			// issuing the tokens are one unit of work — a code that was
-			// consumed without a session being issued is one the user has lost
-			// for nothing.
-			if _, err := store.UpdateTotpSetting().
-				SetRecoveryCodeHashes(settings.RecoveryCodeHashes).
-				SetRecoveryCodesUsed(settings.RecoveryCodesUsed).
-				SetUpdatedAt(time.Now()).
-				Where(store.TotpSettingCols.ID.Eq(settings.ID)).
-				Stmt().Exec(ctx, tx); err != nil {
-				return err
-			}
-		}
-		if !valid {
-			return ErrInvalidTwoFactor
-		}
-
-		if _, err := sqlb.DeleteRows[store.PendingTwoFactorSession]().
-			Where(store.PendingTwoFactorSessionCols.ID.Eq(pending.ID)).
-			Exec(ctx, tx); err != nil {
-			return err
-		}
-
-		u, err := sqlb.Query[store.User]().
-			Where(store.UserCols.ID.Eq(pending.UserID)).
-			One(ctx, tx)
-		if err != nil {
-			return err
-		}
-		tokens, err := s.issueTokenPair(ctx, tx, u.ID, u.Email, userAgent, ipAddress)
-		if err != nil {
-			return err
-		}
-		result = AuthResult{User: u, Tokens: &tokens}
-		return nil
-	})
+	settings, secret, err := s.getDecryptedTOTPSettings(ctx, pending.UserID)
 	if err != nil {
 		return AuthResult{}, err
 	}
-	return result, nil
+	valid := authitcrypto.ValidateTOTPCode(secret, code)
+	if !valid && consumeBackupCode(settings, code) {
+		valid = true
+		if err := s.stores.TOTP.UpdateTOTPSettings(ctx, settings); err != nil {
+			return AuthResult{}, err
+		}
+	}
+	if !valid {
+		return AuthResult{}, ErrInvalidTwoFactor
+	}
+
+	_ = s.stores.PendingTwoFactor.DeletePendingTwoFactorSession(ctx, pending.ID)
+
+	u, err := s.stores.Users.GetUserByID(ctx, pending.UserID)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	tokens, err := s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	return AuthResult{User: *u, Tokens: &tokens}, nil
 }

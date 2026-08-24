@@ -9,8 +9,13 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jryannel/sqlb"
+	"github.com/jryannel/authit/store"
 )
+
+// Stores groups the persistence ports the pat package needs.
+type Stores struct {
+	Tokens store.PersonalAccessTokenStore
+}
 
 // Config tunes the pat package's behavior.
 type Config struct {
@@ -38,20 +43,14 @@ func (c Config) withDefaults() Config {
 // Service implements personal-access-token issuance, resolution, and
 // revocation.
 type Service struct {
-	db  *sqlb.DB
-	cfg Config
+	stores Stores
+	cfg    Config
 }
 
-// NewService constructs a Service over db, which must be backed by a database
-// carrying authit's tables — see authitschema.Declare.
-//
-// db is *sqlb.DB rather than the narrower sqlb.Executor because operations
-// that write more than one row need a transaction, and WithTx joins an outer
-// one rather than nesting — so a caller that already has a transaction open
-// passes its tx-scoped *sqlb.DB and authit's writes land inside it.
-func NewService(db *sqlb.DB, cfg Config) (*Service, error) {
-	if db == nil {
-		return nil, errors.New("authit/pat: db is required")
+// NewService constructs a Service.
+func NewService(stores Stores, cfg Config) (*Service, error) {
+	if stores.Tokens == nil {
+		return nil, errors.New("authit/pat: Stores.Tokens is required")
 	}
-	return &Service{db: db, cfg: cfg.withDefaults()}, nil
+	return &Service{stores: stores, cfg: cfg.withDefaults()}, nil
 }

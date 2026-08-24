@@ -34,8 +34,15 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jryannel/sqlb"
+	"github.com/jryannel/authit/store"
 )
+
+// Stores groups the persistence ports the team package needs.
+type Stores struct {
+	Teams       store.TeamStore
+	Members     store.MemberStore
+	Invitations store.InvitationStore
+}
 
 // Admission is consulted before a new member is admitted to a team, either
 // by direct creation or invitation acceptance. It lets a host application
@@ -66,26 +73,19 @@ func (c Config) withDefaults() Config {
 
 // Service implements team/membership/invitation flows.
 type Service struct {
-	db        *sqlb.DB
+	stores    Stores
 	admission Admission
 	cfg       Config
 }
 
-// NewService constructs a Service over db, which must be backed by a database
-// carrying authit's tables — see authitschema.Declare. admission may be nil,
-// in which case NopAdmission is used.
-//
-// db is *sqlb.DB rather than the narrower sqlb.Executor because the flows that
-// create a team or accept an invitation write more than one row and must do so
-// atomically. WithTx joins an outer transaction rather than nesting, so a
-// caller that already has one open passes its tx-scoped *sqlb.DB and authit's
-// writes land inside it.
-func NewService(db *sqlb.DB, admission Admission, cfg Config) (*Service, error) {
-	if db == nil {
-		return nil, errors.New("authit/team: db is required")
+// NewService constructs a Service. admission may be nil, in which case
+// NopAdmission is used.
+func NewService(stores Stores, admission Admission, cfg Config) (*Service, error) {
+	if stores.Teams == nil || stores.Members == nil || stores.Invitations == nil {
+		return nil, errors.New("authit/team: all Stores fields are required")
 	}
 	if admission == nil {
 		admission = NopAdmission{}
 	}
-	return &Service{db: db, admission: admission, cfg: cfg.withDefaults()}, nil
+	return &Service{stores: stores, admission: admission, cfg: cfg.withDefaults()}, nil
 }

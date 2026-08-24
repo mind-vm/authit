@@ -7,24 +7,20 @@ import (
 	"time"
 
 	"github.com/jryannel/authit/device"
-	"github.com/jryannel/authit/internal/authittest"
+	"github.com/jryannel/authit/memstore"
 )
 
-// newTestService returns a service over a database of this test's own, plus
-// the id of the user who will approve the request — device_authorizations.
-// user_id references users, so an approver has to be a real one.
-func newTestService(t *testing.T, cfg device.Config) (*device.Service, string) {
+func newTestService(t *testing.T, cfg device.Config) *device.Service {
 	t.Helper()
-	db := authittest.FreshDB(t)
-	svc, err := device.NewService(db, cfg)
+	svc, err := device.NewService(device.Stores{Authorizations: memstore.NewDeviceAuthorizationStore()}, cfg)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	return svc, authittest.NewUser(t, db, "approver@example.com")
+	return svc
 }
 
 func TestHappyPath(t *testing.T) {
-	svc, approver := newTestService(t, device.Config{PollInterval: time.Millisecond})
+	svc := newTestService(t, device.Config{PollInterval: time.Millisecond})
 	ctx := t.Context()
 
 	auth, err := svc.StartDeviceAuthorization(ctx, "cli", "read write")
@@ -41,7 +37,7 @@ func TestHappyPath(t *testing.T) {
 	}
 
 	time.Sleep(2 * time.Millisecond)
-	if err := svc.ApproveDeviceAuthorization(ctx, approver, auth.UserCode); err != nil {
+	if err := svc.ApproveDeviceAuthorization(ctx, "user-1", auth.UserCode); err != nil {
 		t.Fatalf("ApproveDeviceAuthorization: %v", err)
 	}
 
@@ -49,7 +45,7 @@ func TestHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PollDeviceToken: %v", err)
 	}
-	if userID != approver || scope != "read write" {
+	if userID != "user-1" || scope != "read write" {
 		t.Fatalf("got userID=%q scope=%q", userID, scope)
 	}
 
@@ -60,7 +56,7 @@ func TestHappyPath(t *testing.T) {
 }
 
 func TestDenied(t *testing.T) {
-	svc, _ := newTestService(t, device.Config{PollInterval: time.Millisecond})
+	svc := newTestService(t, device.Config{PollInterval: time.Millisecond})
 	ctx := t.Context()
 
 	auth, err := svc.StartDeviceAuthorization(ctx, "cli", "")
@@ -76,22 +72,22 @@ func TestDenied(t *testing.T) {
 }
 
 func TestUnknownDeviceCode(t *testing.T) {
-	svc, _ := newTestService(t, device.Config{})
+	svc := newTestService(t, device.Config{})
 	if _, _, err := svc.PollDeviceToken(t.Context(), "not-a-real-device-code"); !errors.Is(err, device.ErrExpiredToken) {
 		t.Fatalf("expected ErrExpiredToken for an unknown device code, got %v", err)
 	}
 }
 
 func TestInvalidUserCode(t *testing.T) {
-	svc, approver := newTestService(t, device.Config{})
+	svc := newTestService(t, device.Config{})
 	ctx := t.Context()
-	if err := svc.ApproveDeviceAuthorization(ctx, approver, "ZZZZ-ZZZZ"); !errors.Is(err, device.ErrInvalidUserCode) {
+	if err := svc.ApproveDeviceAuthorization(ctx, "user-1", "ZZZZ-ZZZZ"); !errors.Is(err, device.ErrInvalidUserCode) {
 		t.Fatalf("expected ErrInvalidUserCode, got %v", err)
 	}
 }
 
 func TestSlowDown(t *testing.T) {
-	svc, _ := newTestService(t, device.Config{PollInterval: time.Hour}) // effectively never satisfied within the test
+	svc := newTestService(t, device.Config{PollInterval: time.Hour}) // effectively never satisfied within the test
 	ctx := t.Context()
 
 	auth, err := svc.StartDeviceAuthorization(ctx, "cli", "")
@@ -107,7 +103,7 @@ func TestSlowDown(t *testing.T) {
 }
 
 func TestExpiredDeviceCode(t *testing.T) {
-	svc, _ := newTestService(t, device.Config{DeviceCodeTTL: time.Millisecond, PollInterval: time.Millisecond})
+	svc := newTestService(t, device.Config{DeviceCodeTTL: time.Millisecond, PollInterval: time.Millisecond})
 	ctx := t.Context()
 
 	auth, err := svc.StartDeviceAuthorization(ctx, "cli", "")

@@ -3,65 +3,60 @@ package team
 import (
 	"context"
 	"errors"
+	"time"
 
+	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
-	"github.com/jryannel/sqlb"
 )
 
 // CreateTeam creates a new team owned by ownerUserID and creates the
-// corresponding owner membership.
-//
-// Both writes happen in one transaction: a team whose owner membership failed
-// to insert is a team nobody can administer, and the last-owner protections
-// elsewhere assume that cannot exist.
+// corresponding owner Member record.
 func (s *Service) CreateTeam(ctx context.Context, name, slug, ownerUserID, ownerDisplayName, ownerEmail string) (store.Team, error) {
-	var created store.Team
-	err := s.db.WithTx(ctx, func(ctx context.Context, tx *sqlb.DB) error {
-		taken, err := sqlb.Query[store.Team]().
-			Where(store.TeamCols.Slug.Eq(slug)).
-			Exists(ctx, tx)
-		if err != nil {
-			return err
-		}
-		if taken {
-			return ErrSlugTaken
-		}
+	if _, err := s.stores.Teams.GetTeamBySlug(ctx, slug); err == nil {
+		return store.Team{}, ErrSlugTaken
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return store.Team{}, err
+	}
 
-		t := store.Team{Name: name, Slug: slug, OwnerID: ownerUserID}
-		inserted, err := sqlb.InsertRows(&t).Exec(ctx, tx)
-		if err != nil {
-			return err
-		}
-		created = inserted[0]
-
-		owner := ownerUserID
-		m := store.TeamMember{
-			TeamID: created.ID, UserID: &owner, Role: string(RoleOwner),
-			DisplayName: ownerDisplayName, Email: ownerEmail, IsActive: true,
-		}
-		_, err = sqlb.InsertRows(&m).Exec(ctx, tx)
-		return err
-	})
+	teamID, err := authitcrypto.NewID()
 	if err != nil {
 		return store.Team{}, err
 	}
-	return created, nil
+	now := time.Now()
+	t := &store.Team{ID: teamID, Name: name, Slug: slug, OwnerID: ownerUserID, CreatedAt: now, UpdatedAt: now}
+	if err := s.stores.Teams.CreateTeam(ctx, t); err != nil {
+		return store.Team{}, err
+	}
+
+	memberID, err := authitcrypto.NewID()
+	if err != nil {
+		return store.Team{}, err
+	}
+	owner := ownerUserID
+	if err := s.stores.Members.CreateMember(ctx, &store.Member{
+		ID: memberID, TeamID: teamID, UserID: &owner, Role: store.RoleOwner,
+		DisplayName: ownerDisplayName, Email: ownerEmail, IsActive: true,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		return store.Team{}, err
+	}
+	return *t, nil
 }
 
 // GetTeam looks up a team by ID.
 func (s *Service) GetTeam(ctx context.Context, id string) (store.Team, error) {
-	t, err := sqlb.Query[store.Team]().Where(store.TeamCols.ID.Eq(id)).One(ctx, s.db)
-	if err != nil && errors.Is(err, sqlb.ErrNotFound) {
-		return store.Team{}, ErrNotFound
+	t, err := s.stores.Teams.GetTeam(ctx, id)
+	if err != nil {
+		return store.Team{}, err
 	}
-	return t, err
+	return *t, nil
 }
 
 // GetTeamBySlug looks up a team by its slug.
 func (s *Service) GetTeamBySlug(ctx context.Context, slug string) (store.Team, error) {
-	t, err := sqlb.Query[store.Team]().Where(store.TeamCols.Slug.Eq(slug)).One(ctx, s.db)
-	if err != nil && errors.Is(err, sqlb.ErrNotFound) {
-		return store.Team{}, ErrNotFound
+	t, err := s.stores.Teams.GetTeamBySlug(ctx, slug)
+	if err != nil {
+		return store.Team{}, err
 	}
-	return t, err
+	return *t, nil
 }

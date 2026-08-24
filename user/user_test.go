@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jryannel/authit/internal/authittest"
 	authitjwt "github.com/jryannel/authit/jwt"
+	"github.com/jryannel/authit/memstore"
 	"github.com/jryannel/authit/user"
 	"github.com/pquerna/otp/totp"
 )
@@ -28,7 +28,16 @@ func newTestService(t *testing.T) *user.Service {
 		totpKey[i] = byte(i)
 	}
 
-	svc, err := user.NewService(authittest.FreshDB(t), signer, nil, user.Config{
+	stores := user.Stores{
+		Users:              memstore.NewUserStore(),
+		RefreshTokens:      memstore.NewRefreshTokenStore(),
+		PasswordResets:     memstore.NewPasswordResetStore(),
+		EmailVerifications: memstore.NewEmailVerificationStore(),
+		TOTP:               memstore.NewTOTPStore(),
+		PendingTwoFactor:   memstore.NewPendingTwoFactorStore(),
+		Lockouts:           memstore.NewLockoutStore(),
+	}
+	svc, err := user.NewService(stores, signer, nil, user.Config{
 		MaxFailedLoginAttempts: 3,
 		TOTPEncryptionKey:      totpKey,
 	})
@@ -70,7 +79,16 @@ func serviceWithCapturingEmailer(t *testing.T) (*user.Service, *capturingEmailer
 		totpKey[i] = byte(i)
 	}
 	emailer := &capturingEmailer{}
-	svc, err := user.NewService(authittest.FreshDB(t), signer, emailer, user.Config{
+	stores := user.Stores{
+		Users:              memstore.NewUserStore(),
+		RefreshTokens:      memstore.NewRefreshTokenStore(),
+		PasswordResets:     memstore.NewPasswordResetStore(),
+		EmailVerifications: memstore.NewEmailVerificationStore(),
+		TOTP:               memstore.NewTOTPStore(),
+		PendingTwoFactor:   memstore.NewPendingTwoFactorStore(),
+		Lockouts:           memstore.NewLockoutStore(),
+	}
+	svc, err := user.NewService(stores, signer, emailer, user.Config{
 		MaxFailedLoginAttempts: 3,
 		TOTPEncryptionKey:      totpKey,
 	})
