@@ -140,7 +140,7 @@ func TestImpersonateProducesUserPlaneToken(t *testing.T) {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 
-	token, err := suSvc.Impersonate(su.ID, "target-user-1", "target@example.com")
+	token, err := suSvc.Impersonate(ctx, su.ID, "target-user-1", "target@example.com")
 	if err != nil {
 		t.Fatalf("Impersonate: %v", err)
 	}

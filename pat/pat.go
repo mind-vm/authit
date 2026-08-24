@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
 )
@@ -41,6 +42,10 @@ func (s *Service) CreateToken(ctx context.Context, userID, name string, scopes [
 	if err := s.stores.Tokens.CreatePersonalAccessToken(ctx, t); err != nil {
 		return "", store.PersonalAccessToken{}, err
 	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventPATCreated, Result: audit.ResultSuccess, ActorID: userID, TargetID: t.ID,
+		Metadata: map[string]any{"name": name, "scopes": scopes},
+	})
 	return raw, *t, nil
 }
 
@@ -74,7 +79,11 @@ func (s *Service) RevokeToken(ctx context.Context, userID, tokenID string) error
 	}
 	now := time.Now()
 	t.RevokedAt = &now
-	return s.stores.Tokens.UpdatePersonalAccessToken(ctx, t)
+	if err := s.stores.Tokens.UpdatePersonalAccessToken(ctx, t); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{Type: audit.EventPATRevoked, Result: audit.ResultSuccess, ActorID: userID, TargetID: tokenID})
+	return nil
 }
 
 // Resolve validates a raw bearer token and returns the record it maps to,

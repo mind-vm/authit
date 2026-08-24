@@ -34,6 +34,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	"github.com/jryannel/authit/store"
 )
 
@@ -62,6 +63,10 @@ type Config struct {
 	// InvitationTTL is how long an invitation stays valid. Defaults to 7
 	// days.
 	InvitationTTL time.Duration
+	// AuditLogger receives security-relevant events (membership and role
+	// changes, invitations). Nil means events are not recorded — see
+	// package audit.
+	AuditLogger audit.Logger
 }
 
 func (c Config) withDefaults() Config {
@@ -75,11 +80,13 @@ func (c Config) withDefaults() Config {
 type Service struct {
 	stores    Stores
 	admission Admission
+	audit     audit.Logger
 	cfg       Config
 }
 
 // NewService constructs a Service. admission may be nil, in which case
-// NopAdmission is used.
+// NopAdmission is used. Config.AuditLogger may be nil, in which case
+// audit.NoopLogger is used.
 func NewService(stores Stores, admission Admission, cfg Config) (*Service, error) {
 	if stores.Teams == nil || stores.Members == nil || stores.Invitations == nil {
 		return nil, errors.New("authit/team: all Stores fields are required")
@@ -87,5 +94,9 @@ func NewService(stores Stores, admission Admission, cfg Config) (*Service, error
 	if admission == nil {
 		admission = NopAdmission{}
 	}
-	return &Service{stores: stores, admission: admission, cfg: cfg.withDefaults()}, nil
+	auditLogger := cfg.AuditLogger
+	if auditLogger == nil {
+		auditLogger = audit.NoopLogger{}
+	}
+	return &Service{stores: stores, admission: admission, audit: auditLogger, cfg: cfg.withDefaults()}, nil
 }

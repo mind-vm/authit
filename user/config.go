@@ -1,6 +1,10 @@
 package user
 
-import "time"
+import (
+	"time"
+
+	"github.com/jryannel/authit/audit"
+)
 
 // EmailVerificationPolicy decides whether Authenticate refuses a login from
 // an account whose email address has not been verified yet.
@@ -57,6 +61,10 @@ type Config struct {
 	// EmailVerification decides whether Authenticate gates login on
 	// User.EmailVerified. Defaults to EmailVerificationRequired.
 	EmailVerification EmailVerificationPolicy
+	// AuditLogger receives security-relevant events (login, lockout,
+	// password/2FA changes, session revocation). Nil means events are not
+	// recorded — see package audit.
+	AuditLogger audit.Logger
 }
 
 func (c Config) withDefaults() Config {

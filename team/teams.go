@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
 )
@@ -40,6 +41,9 @@ func (s *Service) CreateTeam(ctx context.Context, name, slug, ownerUserID, owner
 	}); err != nil {
 		return store.Team{}, err
 	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventTeamCreated, Result: audit.ResultSuccess, ActorID: ownerUserID, TargetID: teamID,
+	})
 	return *t, nil
 }
 

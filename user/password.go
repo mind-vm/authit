@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
 )
@@ -25,7 +26,11 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	}
 	u.PasswordHash = hash
 	u.UpdatedAt = time.Now()
-	return s.stores.Users.UpdateUser(ctx, u)
+	if err := s.stores.Users.UpdateUser(ctx, u); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{Type: audit.EventUserPasswordChanged, Result: audit.ResultSuccess, ActorID: u.ID, Email: u.Email})
+	return nil
 }
 
 // RequestPasswordReset generates a reset token and emails it to the given
@@ -108,5 +113,9 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword strin
 	if err := s.stores.PasswordResets.MarkPasswordResetTokenUsed(ctx, t.ID); err != nil {
 		return err
 	}
-	return s.stores.RefreshTokens.RevokeAllUserRefreshTokens(ctx, u.ID)
+	if err := s.stores.RefreshTokens.RevokeAllUserRefreshTokens(ctx, u.ID); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{Type: audit.EventUserPasswordReset, Result: audit.ResultSuccess, ActorID: u.ID, Email: u.Email})
+	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
 )
@@ -113,5 +114,9 @@ func (s *Service) VerifyEmail(ctx context.Context, rawToken string) error {
 	if err := s.stores.Users.UpdateUser(ctx, u); err != nil {
 		return err
 	}
-	return s.stores.EmailVerifications.MarkEmailVerificationTokenUsed(ctx, t.ID)
+	if err := s.stores.EmailVerifications.MarkEmailVerificationTokenUsed(ctx, t.ID); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{Type: audit.EventUserEmailVerified, Result: audit.ResultSuccess, ActorID: u.ID, Email: u.Email})
+	return nil
 }

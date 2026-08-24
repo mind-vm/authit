@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
 )
@@ -39,6 +40,10 @@ func (s *Service) CreateInvitation(ctx context.Context, teamID, invitedByMemberI
 	if err := s.stores.Invitations.CreateInvitation(ctx, inv); err != nil {
 		return "", store.Invitation{}, err
 	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventTeamInvitationCreated, Result: audit.ResultSuccess, ActorID: invitedByMemberID,
+		TargetID: inv.ID, Email: email, Metadata: map[string]any{"team_id": teamID, "role": string(role)},
+	})
 	return raw, *inv, nil
 }
 
@@ -109,6 +114,10 @@ func (s *Service) AcceptInvitation(ctx context.Context, rawToken, userID, email,
 	if err := s.stores.Invitations.UpdateInvitation(ctx, inv); err != nil {
 		return store.Member{}, err
 	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventTeamInvitationAccepted, Result: audit.ResultSuccess, ActorID: userID,
+		TargetID: inv.ID, Email: email, Metadata: map[string]any{"team_id": inv.TeamID},
+	})
 	return *m, nil
 }
 
@@ -121,7 +130,14 @@ func (s *Service) RevokeInvitation(ctx context.Context, invitationID string) err
 	}
 	inv.Status = store.InvitationRevoked
 	inv.UpdatedAt = time.Now()
-	return s.stores.Invitations.UpdateInvitation(ctx, inv)
+	if err := s.stores.Invitations.UpdateInvitation(ctx, inv); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventTeamInvitationRevoked, Result: audit.ResultSuccess,
+		TargetID: inv.ID, Email: inv.Email, Metadata: map[string]any{"team_id": inv.TeamID},
+	})
+	return nil
 }
 
 // ListInvitationsByTeam lists every invitation for a team (pending,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jryannel/authit/audit"
 	authitcrypto "github.com/jryannel/authit/crypto"
 )
 
@@ -42,7 +43,11 @@ func (s *Service) RevokeSession(ctx context.Context, userID, sessionID string) e
 	}
 	for _, t := range tokens {
 		if t.ID == sessionID {
-			return s.stores.RefreshTokens.RevokeRefreshToken(ctx, t.ID)
+			if err := s.stores.RefreshTokens.RevokeRefreshToken(ctx, t.ID); err != nil {
+				return err
+			}
+			s.audit.Log(ctx, audit.Event{Type: audit.EventUserSessionRevoked, Result: audit.ResultSuccess, ActorID: userID, TargetID: sessionID})
+			return nil
 		}
 	}
 	return ErrSessionNotFound
@@ -59,6 +64,7 @@ func (s *Service) RevokeOtherSessions(ctx context.Context, userID, currentRefres
 	if err != nil {
 		return err
 	}
+	revoked := 0
 	for _, t := range tokens {
 		if t.TokenHash == currentHash {
 			continue
@@ -66,6 +72,13 @@ func (s *Service) RevokeOtherSessions(ctx context.Context, userID, currentRefres
 		if err := s.stores.RefreshTokens.RevokeRefreshToken(ctx, t.ID); err != nil {
 			return err
 		}
+		revoked++
+	}
+	if revoked > 0 {
+		s.audit.Log(ctx, audit.Event{
+			Type: audit.EventUserSessionRevoked, Result: audit.ResultSuccess, ActorID: userID,
+			Metadata: map[string]any{"count": revoked, "scope": "other_sessions"},
+		})
 	}
 	return nil
 }

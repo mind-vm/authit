@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
 )
@@ -82,6 +83,7 @@ func (s *Service) ConfirmTwoFactorSetup(ctx context.Context, userID, code string
 	if err := s.stores.TOTP.UpdateTOTPSettings(ctx, settings); err != nil {
 		return TwoFactorEnrollment{}, err
 	}
+	s.audit.Log(ctx, audit.Event{Type: audit.EventUserTwoFactorEnabled, Result: audit.ResultSuccess, ActorID: userID})
 	return TwoFactorEnrollment{BackupCodes: codes}, nil
 }
 
@@ -95,7 +97,11 @@ func (s *Service) DisableTwoFactor(ctx context.Context, userID, code string) err
 	if !authitcrypto.ValidateTOTPCode(secret, code) && !consumeBackupCode(settings, code) {
 		return ErrInvalidTwoFactor
 	}
-	return s.stores.TOTP.DeleteTOTPSettings(ctx, userID)
+	if err := s.stores.TOTP.DeleteTOTPSettings(ctx, userID); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{Type: audit.EventUserTwoFactorDisabled, Result: audit.ResultSuccess, ActorID: userID})
+	return nil
 }
 
 // RegenerateBackupCodes invalidates existing backup codes and issues a new
@@ -221,6 +227,10 @@ func (s *Service) VerifyTwoFactorLogin(ctx context.Context, pendingToken, code, 
 		}
 	}
 	if !valid {
+		s.audit.Log(ctx, audit.Event{
+			Type: audit.EventUserLoginFailed, Result: audit.ResultFailure, ActorID: pending.UserID,
+			UserAgent: userAgent, IPAddress: ipAddress, Metadata: map[string]any{"reason": "invalid_two_factor"},
+		})
 		return AuthResult{}, ErrInvalidTwoFactor
 	}
 
@@ -234,5 +244,9 @@ func (s *Service) VerifyTwoFactorLogin(ctx context.Context, pendingToken, code, 
 	if err != nil {
 		return AuthResult{}, err
 	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventUserLoginSucceeded, Result: audit.ResultSuccess, ActorID: u.ID, Email: u.Email,
+		UserAgent: userAgent, IPAddress: ipAddress, Metadata: map[string]any{"via": "two_factor"},
+	})
 	return AuthResult{User: *u, Tokens: &tokens}, nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	authitcrypto "github.com/jryannel/authit/crypto"
 	authitjwt "github.com/jryannel/authit/jwt"
 	"github.com/jryannel/authit/store"
@@ -36,6 +37,10 @@ type Config struct {
 	MaxFailedLoginAttempts int
 	// FailedLoginWindow defaults to 15 minutes.
 	FailedLoginWindow time.Duration
+	// AuditLogger receives security-relevant events (login, lockout,
+	// deactivation, impersonation). Nil means events are not recorded —
+	// see package audit.
+	AuditLogger audit.Logger
 }
 
 func (c Config) withDefaults() Config {
@@ -71,12 +76,14 @@ type TokenPair struct {
 type Service struct {
 	stores Stores
 	signer authitjwt.Signer
+	audit  audit.Logger
 	cfg    Config
 }
 
 // NewService constructs a Service. signer may be the same jwt.Signer used
 // by the user package — audience separation, not a separate secret, is
 // what keeps the two planes from accepting each other's tokens.
+// Config.AuditLogger may be nil, in which case audit.NoopLogger is used.
 func NewService(stores Stores, signer authitjwt.Signer, cfg Config) (*Service, error) {
 	if stores.Superusers == nil || stores.RefreshTokens == nil {
 		return nil, errors.New("authit/superuser: Stores.Superusers and Stores.RefreshTokens are required")
@@ -84,7 +91,11 @@ func NewService(stores Stores, signer authitjwt.Signer, cfg Config) (*Service, e
 	if signer == nil {
 		return nil, errors.New("authit/superuser: signer is required")
 	}
-	return &Service{stores: stores, signer: signer, cfg: cfg.withDefaults()}, nil
+	auditLogger := cfg.AuditLogger
+	if auditLogger == nil {
+		auditLogger = audit.NoopLogger{}
+	}
+	return &Service{stores: stores, signer: signer, audit: auditLogger, cfg: cfg.withDefaults()}, nil
 }
 
 // Bootstrap creates the first superuser, and only the first: it fails with
@@ -127,6 +138,14 @@ func (s *Service) createSuperuser(ctx context.Context, email, password, displayN
 	if err := s.stores.Superusers.CreateSuperuser(ctx, su); err != nil {
 		return store.Superuser{}, err
 	}
+	createdByID := ""
+	if createdBy != nil {
+		createdByID = *createdBy
+	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventSuperuserCreated, Result: audit.ResultSuccess,
+		ActorID: createdByID, TargetID: su.ID, Email: su.Email,
+	})
 	return *su, nil
 }
 
@@ -159,5 +178,11 @@ func (s *Service) Deactivate(ctx context.Context, callerID, targetID string) err
 	if err := s.stores.Superusers.UpdateSuperuser(ctx, su); err != nil {
 		return err
 	}
-	return s.stores.RefreshTokens.RevokeAllSuperuserRefreshTokens(ctx, targetID)
+	if err := s.stores.RefreshTokens.RevokeAllSuperuserRefreshTokens(ctx, targetID); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventSuperuserDeactivated, Result: audit.ResultSuccess, ActorID: callerID, TargetID: targetID,
+	})
+	return nil
 }

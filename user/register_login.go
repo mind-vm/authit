@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
 )
@@ -39,6 +40,7 @@ func (s *Service) Register(ctx context.Context, email, password string) (store.U
 	if err := s.stores.Users.CreateUser(ctx, u); err != nil {
 		return store.User{}, err
 	}
+	s.audit.Log(ctx, audit.Event{Type: audit.EventUserRegistered, Result: audit.ResultSuccess, ActorID: u.ID, Email: u.Email})
 	return *u, nil
 }
 
@@ -55,13 +57,30 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		return AuthResult{}, err
 	}
 	if locked {
+		s.audit.Log(ctx, audit.Event{
+			Type: audit.EventUserLoginLocked, Result: audit.ResultDenied,
+			ActorID: u.ID, Email: email, UserAgent: userAgent, IPAddress: ipAddress,
+		})
 		return AuthResult{}, ErrAccountLocked
 	}
 	if u == nil || !authitcrypto.CheckPassword(password, u.PasswordHash) {
 		s.recordFailedLogin(ctx, email, ipAddress)
+		actorID := ""
+		if u != nil {
+			actorID = u.ID
+		}
+		s.audit.Log(ctx, audit.Event{
+			Type: audit.EventUserLoginFailed, Result: audit.ResultFailure,
+			ActorID: actorID, Email: email, UserAgent: userAgent, IPAddress: ipAddress,
+		})
 		return AuthResult{}, ErrInvalidCredentials
 	}
 	if s.cfg.EmailVerification == EmailVerificationRequired && !u.EmailVerified {
+		s.audit.Log(ctx, audit.Event{
+			Type: audit.EventUserLoginFailed, Result: audit.ResultDenied,
+			ActorID: u.ID, Email: email, UserAgent: userAgent, IPAddress: ipAddress,
+			Metadata: map[string]any{"reason": "email_not_verified"},
+		})
 		return AuthResult{}, ErrEmailNotVerified
 	}
 	_ = s.stores.Lockouts.ClearFailedLoginAttempts(ctx, email)
@@ -82,6 +101,10 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 	if err != nil {
 		return AuthResult{}, err
 	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventUserLoginSucceeded, Result: audit.ResultSuccess,
+		ActorID: u.ID, Email: u.Email, UserAgent: userAgent, IPAddress: ipAddress,
+	})
 	return AuthResult{User: *u, Tokens: &tokens}, nil
 }
 
@@ -142,7 +165,15 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 	if err := s.stores.RefreshTokens.RevokeRefreshToken(ctx, t.ID); err != nil {
 		return TokenPair{}, err
 	}
-	return s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
+	tokens, err := s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
+	if err != nil {
+		return TokenPair{}, err
+	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventUserTokenRefreshed, Result: audit.ResultSuccess,
+		ActorID: u.ID, Email: u.Email, UserAgent: userAgent, IPAddress: ipAddress,
+	})
+	return tokens, nil
 }
 
 // Logout revokes a single refresh token. It is idempotent: revoking an
@@ -156,7 +187,11 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 		}
 		return err
 	}
-	return s.stores.RefreshTokens.RevokeRefreshToken(ctx, t.ID)
+	if err := s.stores.RefreshTokens.RevokeRefreshToken(ctx, t.ID); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{Type: audit.EventUserLogout, Result: audit.ResultSuccess, ActorID: t.UserID})
+	return nil
 }
 
 func (s *Service) issueTokenPair(ctx context.Context, userID, email, userAgent, ipAddress string) (TokenPair, error) {

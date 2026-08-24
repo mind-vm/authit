@@ -7,6 +7,7 @@ package user
 import (
 	"errors"
 
+	"github.com/jryannel/authit/audit"
 	authitjwt "github.com/jryannel/authit/jwt"
 	"github.com/jryannel/authit/store"
 )
@@ -28,12 +29,14 @@ type Service struct {
 	stores  Stores
 	signer  authitjwt.Signer
 	emailer EmailSender
+	audit   audit.Logger
 	cfg     Config
 }
 
 // NewService constructs a Service. emailer may be nil, in which case
 // NoopEmailSender is used (useful for tests or apps that deliver
-// links out of band).
+// links out of band). Config.AuditLogger may be nil, in which case
+// audit.NoopLogger is used.
 func NewService(stores Stores, signer authitjwt.Signer, emailer EmailSender, cfg Config) (*Service, error) {
 	if stores.Users == nil || stores.RefreshTokens == nil || stores.PasswordResets == nil ||
 		stores.EmailVerifications == nil || stores.TOTP == nil || stores.PendingTwoFactor == nil ||
@@ -46,5 +49,9 @@ func NewService(stores Stores, signer authitjwt.Signer, emailer EmailSender, cfg
 	if emailer == nil {
 		emailer = NoopEmailSender{}
 	}
-	return &Service{stores: stores, signer: signer, emailer: emailer, cfg: cfg.withDefaults()}, nil
+	auditLogger := cfg.AuditLogger
+	if auditLogger == nil {
+		auditLogger = audit.NoopLogger{}
+	}
+	return &Service{stores: stores, signer: signer, emailer: emailer, audit: auditLogger, cfg: cfg.withDefaults()}, nil
 }

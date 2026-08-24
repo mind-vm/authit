@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	"github.com/jryannel/authit/store"
 )
 
@@ -60,7 +61,14 @@ func (s *Service) UpdateMemberRole(ctx context.Context, memberID string, role st
 	}
 	m.Role = role
 	m.UpdatedAt = time.Now()
-	return s.stores.Members.UpdateMember(ctx, m)
+	if err := s.stores.Members.UpdateMember(ctx, m); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventTeamMemberRoleChanged, Result: audit.ResultSuccess, TargetID: memberID,
+		Metadata: map[string]any{"team_id": m.TeamID, "role": string(role)},
+	})
+	return nil
 }
 
 // SetMemberActive activates or deactivates a member (soft removal).
@@ -76,7 +84,14 @@ func (s *Service) SetMemberActive(ctx context.Context, memberID string, active b
 	}
 	m.IsActive = active
 	m.UpdatedAt = time.Now()
-	return s.stores.Members.UpdateMember(ctx, m)
+	if err := s.stores.Members.UpdateMember(ctx, m); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventTeamMemberStatusChanged, Result: audit.ResultSuccess, TargetID: memberID,
+		Metadata: map[string]any{"team_id": m.TeamID, "active": active},
+	})
+	return nil
 }
 
 // RemoveMember permanently removes a member from a team. It refuses to
@@ -91,7 +106,14 @@ func (s *Service) RemoveMember(ctx context.Context, memberID string) error {
 			return err
 		}
 	}
-	return s.stores.Members.DeleteMember(ctx, memberID)
+	if err := s.stores.Members.DeleteMember(ctx, memberID); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventTeamMemberRemoved, Result: audit.ResultSuccess, TargetID: memberID,
+		Metadata: map[string]any{"team_id": m.TeamID},
+	})
+	return nil
 }
 
 func (s *Service) requireNotLastOwner(ctx context.Context, teamID, excludeMemberID string) error {

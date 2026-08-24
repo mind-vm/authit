@@ -30,6 +30,7 @@ authit was designed by studying two existing implementations (a full-featured bu
 | `pat` | Personal access tokens — named, scoped, optionally-expiring bearer credentials for CLIs/scripts |
 | `device` | RFC 8628 OAuth 2.0 Device Authorization Grant — "visit this URL, enter this code" CLI login |
 | `authithttp` | The only HTTP wiring authit ships: RFC-correct bearer-token extraction, validation, and 401-vs-500 classification |
+| `audit` | Opt-in security-event logging (`Logger`, `Event`, `NoopLogger`, `SlogLogger`) — every service's `Config` carries a nil-safe `AuditLogger` |
 
 ## Quick start
 
@@ -123,6 +124,24 @@ if err != nil {
 
 That's the whole package: `BearerToken`, `Validate`, `StatusFor`. No `http.Handler`, no context key, no opinion about your error envelope. Note that `Validate` accepts an impersonation token (`claims.IsImpersonation()`, minted via `superuser.Impersonate`) — it's genuine, so whether acting-as is allowed on a given route is yours to check. If you want revocation to take effect before token expiry, re-resolve the principal from your own storage and treat claims beyond the subject as hints.
 
+### Audit logging
+
+Every service's `Config` carries an `AuditLogger audit.Logger` field. Leaving it nil (the zero value) means events are simply not recorded — the same opt-in shape as `user.Config`'s `EmailSender` or `team.Config`'s `Admission`. Logins, lockouts, password/2FA changes, session and token revocation, and impersonation all go through it:
+
+```go
+import (
+	"log/slog"
+
+	"github.com/jryannel/authit/audit"
+)
+
+userSvc, _ := user.NewService(stores, signer, emailer, user.Config{
+	AuditLogger: audit.SlogLogger{Logger: slog.Default()},
+})
+```
+
+`audit.SlogLogger` covers the common case of wanting these events in application logs (`ResultFailure`/`ResultDenied` log at Warn, everything else at Info). For a compliance trail (SOC2, GDPR, PCI-DSS) or a dedicated event pipeline, implement `audit.Logger` yourself — it's one method, `Log(ctx, audit.Event)`, and takes no error return: delivery guarantees (retry, buffering, an outbox) are the implementation's concern, not authit's, and a logging failure never affects the outcome of the operation being audited.
+
 ## Database schema
 
 authit ships no DDL and no migrations — every package depends only on the `store` interfaces, and your schema is yours. But the required table set shouldn't have to be reverse-engineered from struct definitions one type at a time, so there's a reference:
@@ -140,7 +159,7 @@ Three things `store/*.go` will not tell you, and the reason the reference exists
 
 - **HTTP handlers/routing.** authit is a service layer, not a web framework — wire it into your own router (chi, net/http, huma, ...). `authithttp` is the one concession, and it stops at parsing and validating a bearer token.
 - **Email delivery.** `user.EmailSender` is an interface; bring your own SMTP/API client.
-- **Social/OAuth login, RBAC policy engines, audit logging.** Out of scope for now; `team.Role` and `store.Member.Role` are plain strings you can extend, and `superuser.Impersonate`'s doc comment notes where a host app should hook in its own audit trail.
+- **Social/OAuth login, RBAC policy engines.** Out of scope for now; `team.Role` and `store.Member.Role` are plain strings you can extend.
 
 ## Status
 

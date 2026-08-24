@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jryannel/authit/audit"
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
 )
@@ -17,6 +18,10 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.recordFailedLogin(ctx, email)
+			s.audit.Log(ctx, audit.Event{
+				Type: audit.EventSuperuserLoginFailed, Result: audit.ResultFailure,
+				Email: email, UserAgent: userAgent, IPAddress: ipAddress,
+			})
 			return TokenPair{}, ErrInvalidCredentials
 		}
 		return TokenPair{}, err
@@ -27,14 +32,27 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 			return TokenPair{}, err
 		}
 		if locked {
+			s.audit.Log(ctx, audit.Event{
+				Type: audit.EventSuperuserLoginLocked, Result: audit.ResultDenied,
+				ActorID: su.ID, Email: email, UserAgent: userAgent, IPAddress: ipAddress,
+			})
 			return TokenPair{}, ErrAccountLocked
 		}
 	}
 	if !authitcrypto.CheckPassword(password, su.PasswordHash) {
 		s.recordFailedLogin(ctx, email)
+		s.audit.Log(ctx, audit.Event{
+			Type: audit.EventSuperuserLoginFailed, Result: audit.ResultFailure,
+			ActorID: su.ID, Email: email, UserAgent: userAgent, IPAddress: ipAddress,
+		})
 		return TokenPair{}, ErrInvalidCredentials
 	}
 	if !su.IsActive {
+		s.audit.Log(ctx, audit.Event{
+			Type: audit.EventSuperuserLoginFailed, Result: audit.ResultDenied,
+			ActorID: su.ID, Email: email, UserAgent: userAgent, IPAddress: ipAddress,
+			Metadata: map[string]any{"reason": "inactive"},
+		})
 		return TokenPair{}, ErrInactive
 	}
 	if s.stores.Lockouts != nil {
@@ -45,7 +63,15 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 	su.LastLoginAt = &now
 	_ = s.stores.Superusers.UpdateSuperuser(ctx, su)
 
-	return s.issueTokenPair(ctx, su.ID, su.Email, userAgent, ipAddress)
+	tokens, err := s.issueTokenPair(ctx, su.ID, su.Email, userAgent, ipAddress)
+	if err != nil {
+		return TokenPair{}, err
+	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventSuperuserLoginSucceeded, Result: audit.ResultSuccess,
+		ActorID: su.ID, Email: su.Email, UserAgent: userAgent, IPAddress: ipAddress,
+	})
+	return tokens, nil
 }
 
 func (s *Service) recordFailedLogin(ctx context.Context, email string) {
@@ -92,7 +118,15 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 	if err := s.stores.RefreshTokens.RevokeSuperuserRefreshToken(ctx, t.ID); err != nil {
 		return TokenPair{}, err
 	}
-	return s.issueTokenPair(ctx, su.ID, su.Email, userAgent, ipAddress)
+	tokens, err := s.issueTokenPair(ctx, su.ID, su.Email, userAgent, ipAddress)
+	if err != nil {
+		return TokenPair{}, err
+	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventSuperuserTokenRefreshed, Result: audit.ResultSuccess,
+		ActorID: su.ID, Email: su.Email, UserAgent: userAgent, IPAddress: ipAddress,
+	})
+	return tokens, nil
 }
 
 // Logout revokes a single refresh token. Idempotent.
@@ -105,7 +139,11 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 		}
 		return err
 	}
-	return s.stores.RefreshTokens.RevokeSuperuserRefreshToken(ctx, t.ID)
+	if err := s.stores.RefreshTokens.RevokeSuperuserRefreshToken(ctx, t.ID); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{Type: audit.EventSuperuserLogout, Result: audit.ResultSuccess, ActorID: t.SuperuserID})
+	return nil
 }
 
 func (s *Service) issueTokenPair(ctx context.Context, superuserID, email, userAgent, ipAddress string) (TokenPair, error) {

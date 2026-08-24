@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	authitcrypto "github.com/jryannel/authit/crypto"
 	"github.com/jryannel/authit/store"
 )
@@ -72,7 +73,11 @@ func (s *Service) ApproveDeviceAuthorization(ctx context.Context, callerUserID, 
 	}
 	d.Status = store.DeviceAuthorizationApproved
 	d.UserID = &callerUserID
-	return s.stores.Authorizations.UpdateDeviceAuthorization(ctx, d)
+	if err := s.stores.Authorizations.UpdateDeviceAuthorization(ctx, d); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{Type: audit.EventDeviceApproved, Result: audit.ResultSuccess, ActorID: callerUserID, TargetID: d.ID})
+	return nil
 }
 
 // DenyDeviceAuthorization marks the device authorization identified by
@@ -83,7 +88,11 @@ func (s *Service) DenyDeviceAuthorization(ctx context.Context, userCode string) 
 		return err
 	}
 	d.Status = store.DeviceAuthorizationDenied
-	return s.stores.Authorizations.UpdateDeviceAuthorization(ctx, d)
+	if err := s.stores.Authorizations.UpdateDeviceAuthorization(ctx, d); err != nil {
+		return err
+	}
+	s.audit.Log(ctx, audit.Event{Type: audit.EventDeviceDenied, Result: audit.ResultDenied, TargetID: d.ID})
+	return nil
 }
 
 func (s *Service) pendingByUserCode(ctx context.Context, userCode string) (*store.DeviceAuthorization, error) {

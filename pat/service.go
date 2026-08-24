@@ -9,6 +9,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	"github.com/jryannel/authit/store"
 )
 
@@ -31,6 +32,9 @@ type Config struct {
 	// expiry over time, so a host application that wants that stance can
 	// opt in here rather than authit assuming it.
 	RequireExpiry bool
+	// AuditLogger receives security-relevant events (token creation,
+	// revocation). Nil means events are not recorded — see package audit.
+	AuditLogger audit.Logger
 }
 
 func (c Config) withDefaults() Config {
@@ -44,13 +48,19 @@ func (c Config) withDefaults() Config {
 // revocation.
 type Service struct {
 	stores Stores
+	audit  audit.Logger
 	cfg    Config
 }
 
-// NewService constructs a Service.
+// NewService constructs a Service. Config.AuditLogger may be nil, in which
+// case audit.NoopLogger is used.
 func NewService(stores Stores, cfg Config) (*Service, error) {
 	if stores.Tokens == nil {
 		return nil, errors.New("authit/pat: Stores.Tokens is required")
 	}
-	return &Service{stores: stores, cfg: cfg.withDefaults()}, nil
+	auditLogger := cfg.AuditLogger
+	if auditLogger == nil {
+		auditLogger = audit.NoopLogger{}
+	}
+	return &Service{stores: stores, audit: auditLogger, cfg: cfg.withDefaults()}, nil
 }

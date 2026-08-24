@@ -21,6 +21,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jryannel/authit/audit"
 	"github.com/jryannel/authit/store"
 )
 
@@ -42,6 +43,9 @@ type Config struct {
 	// interval, permanently, the first time the CLI is caught polling
 	// faster than instructed. Defaults to 5 seconds, per RFC 8628 §3.5.
 	SlowDownIncrement time.Duration
+	// AuditLogger receives security-relevant events (approval, denial).
+	// Nil means events are not recorded — see package audit.
+	AuditLogger audit.Logger
 }
 
 func (c Config) withDefaults() Config {
@@ -71,13 +75,19 @@ type Authorization struct {
 // Service implements the device-authorization-grant flow.
 type Service struct {
 	stores Stores
+	audit  audit.Logger
 	cfg    Config
 }
 
-// NewService constructs a Service.
+// NewService constructs a Service. Config.AuditLogger may be nil, in which
+// case audit.NoopLogger is used.
 func NewService(stores Stores, cfg Config) (*Service, error) {
 	if stores.Authorizations == nil {
 		return nil, errors.New("authit/device: Stores.Authorizations is required")
 	}
-	return &Service{stores: stores, cfg: cfg.withDefaults()}, nil
+	auditLogger := cfg.AuditLogger
+	if auditLogger == nil {
+		auditLogger = audit.NoopLogger{}
+	}
+	return &Service{stores: stores, audit: auditLogger, cfg: cfg.withDefaults()}, nil
 }
