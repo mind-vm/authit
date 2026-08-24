@@ -1,0 +1,16 @@
+module github.com/jryannel/authit/authhandlers
+
+go 1.25.0
+
+// TRANSITIONAL. See sqlbstore/go.mod for why this replace exists.
+replace github.com/jryannel/authit => ../
+
+require github.com/jryannel/authit v0.1.0
+
+require (
+	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
+	github.com/pquerna/otp v1.5.0 // indirect
+	golang.org/x/crypto v0.55.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)

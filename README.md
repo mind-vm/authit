@@ -124,6 +124,19 @@ if err != nil {
 
 That's the whole package: `BearerToken`, `Validate`, `StatusFor`. No `http.Handler`, no context key, no opinion about your error envelope. Note that `Validate` accepts an impersonation token (`claims.IsImpersonation()`, minted via `superuser.Impersonate`) — it's genuine, so whether acting-as is allowed on a given route is yours to check. If you want revocation to take effect before token expiry, re-resolve the principal from your own storage and treat claims beyond the subject as hints.
 
+### Ready-made HTTP routes (`authhandlers`)
+
+If you'd rather not hand-write the request/response plumbing for every `user` flow, [`authhandlers`](authhandlers) is a separate module (own `go.mod`, like `sqlbstore`) that wraps `user.Service` in a mountable route group — register, login, refresh, logout, password reset, email verification, 2FA, and session management. It depends on nothing beyond `net/http` and authit itself: no chi, no huma, no OpenAPI generator. `NewUserHandler` returns a plain `http.Handler` (a `*http.ServeMux` using Go 1.22's method+pattern routing), which you mount wherever you like:
+
+```go
+import "github.com/jryannel/authit/authhandlers"
+
+mux := http.NewServeMux()
+mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(userSvc, signer)))
+```
+
+Protected routes (session management, password change, 2FA management) validate the caller's bearer token themselves against the same `signer` you pass in — no host middleware or context key required. CORS, rate limiting, and request logging are still yours; this package stops at request/response JSON and status codes. It covers the `user` plane only for now — `team`, `superuser`, `pat`, and `device` follow the same pattern if you need routes for those too.
+
 ### Audit logging
 
 Every service's `Config` carries an `AuditLogger audit.Logger` field. Leaving it nil (the zero value) means events are simply not recorded — the same opt-in shape as `user.Config`'s `EmailSender` or `team.Config`'s `Admission`. Logins, lockouts, password/2FA changes, session and token revocation, and impersonation all go through it:
