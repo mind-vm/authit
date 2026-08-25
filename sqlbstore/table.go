@@ -25,8 +25,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jryannel/authit/store"
-	"github.com/jryannel/sqlb"
+	"github.com/mind-vm/authit/store"
+	"github.com/mind-vm/sqlb"
 )
 
 // Table binds authit's canonical type T to an app's sqlb row type R.

@@ -9,7 +9,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/jryannel/authit/store"
+	"github.com/mind-vm/authit/store"
 )
 
 // UserStore is an in-memory store.UserStore.

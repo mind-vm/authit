@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	authitjwt "github.com/jryannel/authit/jwt"
-	"github.com/jryannel/authit/memstore"
-	"github.com/jryannel/authit/superuser"
+	authitjwt "github.com/mind-vm/authit/jwt"
+	"github.com/mind-vm/authit/memstore"
+	"github.com/mind-vm/authit/superuser"
 )
 
 func newSigner(t *testing.T) authitjwt.Signer {

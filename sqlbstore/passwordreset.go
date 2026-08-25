@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/jryannel/authit/store"
-	"github.com/jryannel/sqlb"
+	"github.com/mind-vm/authit/store"
+	"github.com/mind-vm/sqlb"
 )
 
 // PasswordResetAdapter implements store.PasswordResetStore over an app's

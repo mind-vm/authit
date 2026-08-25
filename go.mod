@@ -1,4 +1,4 @@
-module github.com/jryannel/authit
+module github.com/mind-vm/authit
 
 go 1.25.0
 

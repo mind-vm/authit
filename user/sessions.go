@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jryannel/authit/audit"
-	authitcrypto "github.com/jryannel/authit/crypto"
+	"github.com/mind-vm/authit/audit"
+	authitcrypto "github.com/mind-vm/authit/crypto"
 )
 
 // ListSessions returns every active (unrevoked, unexpired) session for a

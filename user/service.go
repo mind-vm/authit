@@ -7,9 +7,9 @@ package user
 import (
 	"errors"
 
-	"github.com/jryannel/authit/audit"
-	authitjwt "github.com/jryannel/authit/jwt"
-	"github.com/jryannel/authit/store"
+	"github.com/mind-vm/authit/audit"
+	authitjwt "github.com/mind-vm/authit/jwt"
+	"github.com/mind-vm/authit/store"
 )
 
 // Stores groups the persistence ports the user package needs. A host

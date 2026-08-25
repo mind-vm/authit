@@ -5,9 +5,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jryannel/authit/audit"
-	authitcrypto "github.com/jryannel/authit/crypto"
-	"github.com/jryannel/authit/store"
+	"github.com/mind-vm/authit/audit"
+	authitcrypto "github.com/mind-vm/authit/crypto"
+	"github.com/mind-vm/authit/store"
 )
 
 // BeginTwoFactorSetup generates a new TOTP secret for userID and stores it

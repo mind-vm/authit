@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jryannel/authit/audit"
+	"github.com/mind-vm/authit/audit"
 )
 
 func TestNoopLoggerDiscardsEvents(t *testing.T) {

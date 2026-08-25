@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/jryannel/authit/audit"
-	"github.com/jryannel/authit/store"
+	"github.com/mind-vm/authit/audit"
+	"github.com/mind-vm/authit/store"
 )
 
 // GetMember looks up a member by ID.

@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	authitjwt "github.com/jryannel/authit/jwt"
-	"github.com/jryannel/authit/memstore"
-	"github.com/jryannel/authit/store"
-	"github.com/jryannel/authit/user"
+	authitjwt "github.com/mind-vm/authit/jwt"
+	"github.com/mind-vm/authit/memstore"
+	"github.com/mind-vm/authit/store"
+	"github.com/mind-vm/authit/user"
 )
 
 // serviceWithConfig builds a Service over fresh memstores with cfg as

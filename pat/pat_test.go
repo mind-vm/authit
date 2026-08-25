@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jryannel/authit/memstore"
-	"github.com/jryannel/authit/pat"
+	"github.com/mind-vm/authit/memstore"
+	"github.com/mind-vm/authit/pat"
 )
 
 func newTestService(t *testing.T, cfg pat.Config) *pat.Service {

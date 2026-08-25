@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jryannel/authit/authhandlers"
-	authitjwt "github.com/jryannel/authit/jwt"
-	"github.com/jryannel/authit/memstore"
-	"github.com/jryannel/authit/user"
+	"github.com/mind-vm/authit/authhandlers"
+	authitjwt "github.com/mind-vm/authit/jwt"
+	"github.com/mind-vm/authit/memstore"
+	"github.com/mind-vm/authit/user"
 )
 
 type capturingEmailer struct {

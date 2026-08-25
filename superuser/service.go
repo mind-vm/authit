@@ -5,10 +5,10 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jryannel/authit/audit"
-	authitcrypto "github.com/jryannel/authit/crypto"
-	authitjwt "github.com/jryannel/authit/jwt"
-	"github.com/jryannel/authit/store"
+	"github.com/mind-vm/authit/audit"
+	authitcrypto "github.com/mind-vm/authit/crypto"
+	authitjwt "github.com/mind-vm/authit/jwt"
+	"github.com/mind-vm/authit/store"
 )
 
 // Stores groups the persistence ports the superuser package needs.

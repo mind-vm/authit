@@ -3,8 +3,8 @@ package authhandlers
 import (
 	"time"
 
-	"github.com/jryannel/authit/store"
-	"github.com/jryannel/authit/user"
+	"github.com/mind-vm/authit/store"
+	"github.com/mind-vm/authit/user"
 )
 
 // userResponse never exposes store.User.PasswordHash — only the fields

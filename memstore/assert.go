@@ -1,6 +1,6 @@
 package memstore
 
-import "github.com/jryannel/authit/store"
+import "github.com/mind-vm/authit/store"
 
 // Compile-time assertions that every store above satisfies its interface.
 var (

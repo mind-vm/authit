@@ -37,9 +37,9 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/jryannel/authit/authithttp"
-	authitjwt "github.com/jryannel/authit/jwt"
-	"github.com/jryannel/authit/user"
+	"github.com/mind-vm/authit/authithttp"
+	authitjwt "github.com/mind-vm/authit/jwt"
+	"github.com/mind-vm/authit/user"
 )
 
 // UserHandler serves authit's user-plane routes.
