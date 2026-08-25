@@ -2,7 +2,8 @@ module github.com/jryannel/authit/authhandlers
 
 go 1.25.0
 
-// TRANSITIONAL. See sqlbstore/go.mod for why this replace exists.
+// See sqlbstore/go.mod for why this replace exists (short version: authit is
+// a private repo, and this keeps resolution off the network).
 replace github.com/jryannel/authit => ../
 
 require github.com/jryannel/authit v0.1.0

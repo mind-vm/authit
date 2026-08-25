@@ -2,11 +2,13 @@ module github.com/jryannel/authit/sqlbstore
 
 go 1.25.0
 
-// TRANSITIONAL. The require below names the version this module intends to
-// consume; this replace is what makes it resolve before that tag exists.
-// Remove this line once github.com/jryannel/authit v0.1.0 is tagged and
-// pushed -- go.work is what keeps local development working after it goes,
-// and while it is here, this module cannot be consumed outside a workspace.
+// v0.1.0 is tagged and pushed, so this replace is no longer what makes the
+// require below resolve -- but it stays, because github.com/jryannel/authit
+// is a PRIVATE repository. Without it, resolution goes over the network and
+// needs GOPRIVATE plus GitHub credentials (see "Access and installation" in
+// the README). With it, the workspace resolves everything from the working
+// tree and this module cannot be consumed outside that workspace. Drop it
+// only for a consumer that has private-module auth configured.
 replace github.com/jryannel/authit => ../
 
 require (
