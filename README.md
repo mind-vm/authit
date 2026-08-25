@@ -40,7 +40,7 @@ anything that builds against authit — a developer machine, a CI runner — nee
 Go pointed around the public proxy plus a credential that can read the repo:
 
 ```sh
-go env -w GOPRIVATE=github.com/jryannel/*
+go env -w GOPRIVATE=github.com/mind-vm/*
 git config --global url."git@github.com:".insteadOf "https://github.com/"
 ```
 
@@ -49,7 +49,7 @@ missing, it just isn't public. In CI, use a deploy key or a token-scoped
 `insteadOf` rather than a personal credential.
 
 Inside this repo none of that applies — `go.work` plus the
-`replace github.com/jryannel/authit => ../` in `sqlbstore` and `authhandlers`
+`replace github.com/mind-vm/authit => ../` in `sqlbstore` and `authhandlers`
 resolves everything from the working tree, with no network fetch.
 
 ## Quick start
