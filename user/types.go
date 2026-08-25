@@ -3,7 +3,7 @@ package user
 import (
 	"time"
 
-	"github.com/jryannel/authit/store"
+	"github.com/mind-vm/authit/store"
 )
 
 // TokenPair is what a completed login/refresh returns to the caller.

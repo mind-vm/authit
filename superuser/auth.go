@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jryannel/authit/audit"
-	authitcrypto "github.com/jryannel/authit/crypto"
-	"github.com/jryannel/authit/store"
+	"github.com/mind-vm/authit/audit"
+	authitcrypto "github.com/mind-vm/authit/crypto"
+	"github.com/mind-vm/authit/store"
 )
 
 // Authenticate verifies email/password against the superuser table and

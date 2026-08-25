@@ -3,7 +3,7 @@ package user
 import (
 	"time"
 
-	"github.com/jryannel/authit/audit"
+	"github.com/mind-vm/authit/audit"
 )
 
 // EmailVerificationPolicy decides whether Authenticate refuses a login from

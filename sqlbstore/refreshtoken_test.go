@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jryannel/authit/sqlbstore"
-	"github.com/jryannel/authit/store"
-	"github.com/jryannel/sqlb"
+	"github.com/mind-vm/authit/sqlbstore"
+	"github.com/mind-vm/authit/store"
+	"github.com/mind-vm/sqlb"
 )
 
 type testRefreshToken struct {

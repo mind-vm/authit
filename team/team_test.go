@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	authitcrypto "github.com/jryannel/authit/crypto"
-	"github.com/jryannel/authit/memstore"
-	"github.com/jryannel/authit/store"
-	"github.com/jryannel/authit/team"
+	authitcrypto "github.com/mind-vm/authit/crypto"
+	"github.com/mind-vm/authit/memstore"
+	"github.com/mind-vm/authit/store"
+	"github.com/mind-vm/authit/team"
 )
 
 func newTestService(t *testing.T) *team.Service {

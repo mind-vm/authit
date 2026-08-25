@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/jryannel/authit/store"
+	"github.com/mind-vm/authit/store"
 )
 
 // PersonalAccessTokenStore is an in-memory store.PersonalAccessTokenStore.

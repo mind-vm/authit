@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jryannel/authit/device"
-	"github.com/jryannel/authit/memstore"
+	"github.com/mind-vm/authit/device"
+	"github.com/mind-vm/authit/memstore"
 )
 
 func newTestService(t *testing.T, cfg device.Config) *device.Service {

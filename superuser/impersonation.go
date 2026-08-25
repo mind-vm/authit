@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jryannel/authit/audit"
-	authitjwt "github.com/jryannel/authit/jwt"
+	"github.com/mind-vm/authit/audit"
+	authitjwt "github.com/mind-vm/authit/jwt"
 )
 
 // Impersonate mints a short-lived, ordinary user-plane access token (no

@@ -3,7 +3,7 @@ package crypto_test
 import (
 	"testing"
 
-	authitcrypto "github.com/jryannel/authit/crypto"
+	authitcrypto "github.com/mind-vm/authit/crypto"
 )
 
 func TestHashPasswordAndCheck(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	jwtlib "github.com/golang-jwt/jwt/v5"
-	authitjwt "github.com/jryannel/authit/jwt"
+	authitjwt "github.com/mind-vm/authit/jwt"
 )
 
 var (

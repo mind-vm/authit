@@ -3,8 +3,8 @@ package sqlbstore
 import (
 	"context"
 
-	"github.com/jryannel/authit/store"
-	"github.com/jryannel/sqlb"
+	"github.com/mind-vm/authit/store"
+	"github.com/mind-vm/sqlb"
 )
 
 // TeamAdapter implements store.TeamStore over an app's sqlb row type R.

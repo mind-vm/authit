@@ -25,11 +25,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	authitjwt "github.com/jryannel/authit/jwt"
-	"github.com/jryannel/authit/sqlbstore"
-	"github.com/jryannel/authit/store"
-	"github.com/jryannel/authit/user"
-	"github.com/jryannel/sqlb"
+	authitjwt "github.com/mind-vm/authit/jwt"
+	"github.com/mind-vm/authit/sqlbstore"
+	"github.com/mind-vm/authit/store"
+	"github.com/mind-vm/authit/user"
+	"github.com/mind-vm/sqlb"
 )
 
 // ---------------------------------------------------------------------------

@@ -1,20 +1,21 @@
-module github.com/jryannel/authit/sqlbstore
+module github.com/mind-vm/authit/sqlbstore
 
 go 1.25.0
 
-// v0.1.0 is tagged and pushed, so this replace is no longer what makes the
-// require below resolve -- but it stays, because github.com/jryannel/authit
-// is a PRIVATE repository. Without it, resolution goes over the network and
-// needs GOPRIVATE plus GitHub credentials (see "Access and installation" in
-// the README). With it, the workspace resolves everything from the working
+// This replace resolves github.com/mind-vm/authit from the working tree
+// instead of the network, and it stays permanently -- not just until
+// v0.2.0 is tagged -- because github.com/mind-vm/authit is a PRIVATE
+// repository. Without it, resolution goes over the network and needs
+// GOPRIVATE plus GitHub credentials (see "Access and installation" in the
+// README). With it, the workspace resolves everything from the working
 // tree and this module cannot be consumed outside that workspace. Drop it
 // only for a consumer that has private-module auth configured.
-replace github.com/jryannel/authit => ../
+replace github.com/mind-vm/authit => ../
 
 require (
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/jryannel/authit v0.1.0
-	github.com/jryannel/sqlb v0.15.1
+	github.com/mind-vm/authit v0.2.0
+	github.com/mind-vm/sqlb v0.18.0
 )
 
 require (

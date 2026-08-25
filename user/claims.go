@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	authitjwt "github.com/jryannel/authit/jwt"
+	authitjwt "github.com/mind-vm/authit/jwt"
 )
 
 func newAccessClaims(userID, email string, expiresAt time.Time) authitjwt.Claims {

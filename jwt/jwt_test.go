@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	authitjwt "github.com/jryannel/authit/jwt"
+	authitjwt "github.com/mind-vm/authit/jwt"
 )
 
 func newSigner(t *testing.T) authitjwt.Signer {

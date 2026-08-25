@@ -8,8 +8,8 @@ import (
 	"time"
 
 	jwtlib "github.com/golang-jwt/jwt/v5"
-	"github.com/jryannel/authit/authithttp"
-	authitjwt "github.com/jryannel/authit/jwt"
+	"github.com/mind-vm/authit/authithttp"
+	authitjwt "github.com/mind-vm/authit/jwt"
 )
 
 func testSigner(t *testing.T) *authitjwt.HMACSigner {

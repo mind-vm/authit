@@ -34,8 +34,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jryannel/authit/audit"
-	"github.com/jryannel/authit/store"
+	"github.com/mind-vm/authit/audit"
+	"github.com/mind-vm/authit/store"
 )
 
 // Stores groups the persistence ports the team package needs.

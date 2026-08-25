@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/jryannel/authit/user"
+	"github.com/mind-vm/authit/user"
 )
 
 // errorBody is the JSON shape of every error response this package writes.

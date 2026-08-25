@@ -40,7 +40,7 @@ anything that builds against authit — a developer machine, a CI runner — nee
 Go pointed around the public proxy plus a credential that can read the repo:
 
 ```sh
-go env -w GOPRIVATE=github.com/jryannel/*
+go env -w GOPRIVATE=github.com/mind-vm/*
 git config --global url."git@github.com:".insteadOf "https://github.com/"
 ```
 
@@ -49,16 +49,16 @@ missing, it just isn't public. In CI, use a deploy key or a token-scoped
 `insteadOf` rather than a personal credential.
 
 Inside this repo none of that applies — `go.work` plus the
-`replace github.com/jryannel/authit => ../` in `sqlbstore` and `authhandlers`
+`replace github.com/mind-vm/authit => ../` in `sqlbstore` and `authhandlers`
 resolves everything from the working tree, with no network fetch.
 
 ## Quick start
 
 ```go
 import (
-	authitjwt "github.com/jryannel/authit/jwt"
-	"github.com/jryannel/authit/memstore"
-	"github.com/jryannel/authit/user"
+	authitjwt "github.com/mind-vm/authit/jwt"
+	"github.com/mind-vm/authit/memstore"
+	"github.com/mind-vm/authit/user"
 )
 
 signer, _ := authitjwt.NewHMACSigner(jwtSecret, authitjwt.Defaults{Issuer: "myapp"})
@@ -132,7 +132,7 @@ It's idempotent, and it kills any verification link already sitting in an inbox.
 authit is a service layer, not a web framework, with one exception. Pulling a bearer token off a request and validating it is identical in every consumer and quietly security-critical: `strings.TrimPrefix(h, "Bearer ")` turns a malformed header into a *token* rather than a rejection, the scheme is case-insensitive per RFC 7235 so a naive prefix check rejects valid requests, and "no token" and "bad token" are both 401 while "the signer can't verify anything" is a 500. So that one piece is tested here instead of approximated everywhere:
 
 ```go
-import "github.com/jryannel/authit/authithttp"
+import "github.com/mind-vm/authit/authithttp"
 
 claims, err := authithttp.Validate(signer, r)
 if err != nil {
@@ -149,7 +149,7 @@ That's the whole package: `BearerToken`, `Validate`, `StatusFor`. No `http.Handl
 If you'd rather not hand-write the request/response plumbing for every `user` flow, [`authhandlers`](authhandlers) is a separate module (own `go.mod`, like `sqlbstore`) that wraps `user.Service` in a mountable route group — register, login, refresh, logout, password reset, email verification, 2FA, and session management. It depends on nothing beyond `net/http` and authit itself: no chi, no huma, no OpenAPI generator. `NewUserHandler` returns a plain `http.Handler` (a `*http.ServeMux` using Go 1.22's method+pattern routing), which you mount wherever you like:
 
 ```go
-import "github.com/jryannel/authit/authhandlers"
+import "github.com/mind-vm/authit/authhandlers"
 
 mux := http.NewServeMux()
 mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(userSvc, signer)))
@@ -165,7 +165,7 @@ Every service's `Config` carries an `AuditLogger audit.Logger` field. Leaving it
 import (
 	"log/slog"
 
-	"github.com/jryannel/authit/audit"
+	"github.com/mind-vm/authit/audit"
 )
 
 userSvc, _ := user.NewService(stores, signer, emailer, user.Config{

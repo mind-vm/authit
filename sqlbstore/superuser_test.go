@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jryannel/authit/sqlbstore"
-	"github.com/jryannel/authit/store"
+	"github.com/mind-vm/authit/sqlbstore"
+	"github.com/mind-vm/authit/store"
 )
 
 type testSuperuser struct {

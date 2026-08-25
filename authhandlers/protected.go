@@ -3,7 +3,7 @@ package authhandlers
 import (
 	"net/http"
 
-	authitjwt "github.com/jryannel/authit/jwt"
+	authitjwt "github.com/mind-vm/authit/jwt"
 )
 
 func (h *UserHandler) changePassword(w http.ResponseWriter, r *http.Request, claims authitjwt.Claims) {

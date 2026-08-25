@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jryannel/authit/store"
+	"github.com/mind-vm/authit/store"
 )
 
 // LockoutStore is an in-memory store.LockoutStore, shared by the user and
