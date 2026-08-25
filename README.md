@@ -155,6 +155,8 @@ mux := http.NewServeMux()
 mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(userSvc, signer)))
 ```
 
+There's a runnable server in [`authhandlers/cmd/example`](authhandlers/cmd/example) — `go run ./cmd/example` from that module mounts these routes over `memstore`, so the whole flow is curl-able with no database and no configuration. Its emailer prints to stdout, which is what makes the password-reset and email-verification legs drivable from outside. See its [README](authhandlers/cmd/example/README.md) for the walkthrough.
+
 Protected routes (session management, password change, 2FA management) validate the caller's bearer token themselves against the same `signer` you pass in — no host middleware or context key required. CORS, rate limiting, and request logging are still yours; this package stops at request/response JSON and status codes. It covers the `user` plane only for now — `team`, `superuser`, `pat`, and `device` follow the same pattern if you need routes for those too.
 
 ### Audit logging
