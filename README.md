@@ -32,26 +32,6 @@ authit was designed by studying two existing implementations (a full-featured bu
 | `authithttp` | The only HTTP wiring authit ships: RFC-correct bearer-token extraction, validation, and 401-vs-500 classification |
 | `audit` | Opt-in security-event logging (`Logger`, `Event`, `NoopLogger`, `SlogLogger`) — every service's `Config` carries a nil-safe `AuditLogger` |
 
-## Access and installation
-
-authit is a **private** repository, and so is its `sqlb` dependency. Neither
-resolves through `proxy.golang.org` nor verifies against `sum.golang.org`, so
-anything that builds against authit — a developer machine, a CI runner — needs
-Go pointed around the public proxy plus a credential that can read the repo:
-
-```sh
-go env -w GOPRIVATE=github.com/mind-vm/*
-git config --global url."git@github.com:".insteadOf "https://github.com/"
-```
-
-Without `GOPRIVATE`, `go get` fails with a 404 from the proxy: the module isn't
-missing, it just isn't public. In CI, use a deploy key or a token-scoped
-`insteadOf` rather than a personal credential.
-
-Inside this repo none of that applies — `go.work` plus the
-`replace github.com/mind-vm/authit => ../` in `sqlbstore` and `authhandlers`
-resolves everything from the working tree, with no network fetch.
-
 ## Quick start
 
 ```go
@@ -200,7 +180,4 @@ Early scaffold. Core flows are implemented and tested (see `go test ./...`), but
 
 ## License
 
-Proprietary — see [LICENSE](LICENSE). This is not open source: it's a
-reusable asset licensed to clients per-project via
-[CLIENT-LICENSE-TEMPLATE.md](CLIENT-LICENSE-TEMPLATE.md), not for
-independent public use.
+MIT — see [LICENSE](LICENSE).
