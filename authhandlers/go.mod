@@ -2,9 +2,6 @@ module github.com/mind-vm/authit/authhandlers
 
 go 1.25.0
 
-// See sqlbstore/go.mod for why this replace exists (short version: authit is
-// a private repo, and this keeps resolution off the network).
-replace github.com/mind-vm/authit => ../
 
 require github.com/mind-vm/authit v0.2.0
 

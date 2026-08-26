@@ -1,7 +1,6 @@
 github.com/danielgtaylor/huma/v2 v2.39.0/go.mod h1:pGstQdMhQnP9ZBnrqPRb9goqOWs1HU1uQewKWmkJOAY=
 github.com/kr/pretty v0.3.0/go.mod h1:640gp4NfQd8pI5XOwp5fnNeVWj67G7CFk/SaSQn7NBk=
-github.com/mind-vm/sqlb v0.18.0 h1:TzD4p1cQe2+44vNyww/UaO4qc+7wiYjJ9dy0dA3Pq34=
-github.com/mind-vm/sqlb v0.18.0/go.mod h1:v13+FsGYJkPfkmZgSlDDvhlZAJ6EkvjPKGZpyOQIH24=
+github.com/mind-vm/authit v0.2.0/go.mod h1:VsmBXHdANswdZSvQjoGWWdw7PhZksyNRbD25qzwNXms=
 github.com/stretchr/objx v0.5.2/go.mod h1:FRsXN1f5AsAjCGJKqEizvkpNtU+EGNCLh3NxZ/8L+MA=
 golang.org/x/mod v0.38.0/go.mod h1:V6Xz0pq8TQ3dGqVQ1FVHuelZpAL0uNhSkk9ogYP3c40=
 golang.org/x/net v0.57.0/go.mod h1:KpXc8iv+r3XplLAG/f7Jsf9RPszJzdR0f58q9vGOuEU=
