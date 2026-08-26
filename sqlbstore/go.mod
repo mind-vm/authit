@@ -2,11 +2,10 @@ module github.com/mind-vm/authit/sqlbstore
 
 go 1.25.0
 
-
 require (
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/mind-vm/authit v0.2.0
-	github.com/mind-vm/sqlb v0.18.0
+	github.com/mind-vm/authit v0.3.0
+	github.com/mind-vm/sqlb v0.20.0
 )
 
 require (
