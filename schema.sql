@@ -43,8 +43,9 @@
 --    then has to dereference.
 --  * Foreign keys to users(id) are ON DELETE CASCADE, so deleting a user
 --    takes their sessions and tokens with them. failed_login_attempts is
---    keyed by email, not user_id, on purpose: lockout is checked before a
---    matching user is confirmed to exist, so it cannot leak account existence.
+--    keyed by email, not user_id, on purpose: the temporary lockout is
+--    derived from it and is evaluated before a matching user is confirmed to
+--    exist, so it cannot leak account existence.
 
 -- ---------------------------------------------------------------------------
 -- user plane -- the seven stores in user.Stores, plus the eighth table
@@ -135,7 +136,9 @@ CREATE TABLE failed_login_attempts (
     ip_address text        NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now()
 );
--- CountRecentFailedLoginAttempts filters on both columns together.
+-- CountRecentFailedLoginAttempts filters on both columns together, and runs
+-- on EVERY login attempt rather than only on failures -- the temporary
+-- lockout is derived from this count. Do not drop this index.
 CREATE INDEX failed_login_attempts_email_created_at_idx
     ON failed_login_attempts (email, created_at DESC);
 
@@ -144,6 +147,11 @@ CREATE INDEX failed_login_attempts_email_created_at_idx
 -- set of locked user ids; the row shape is entirely yours. The UNIQUE
 -- constraint on user_id is required, not decorative: LockAccount relies on it
 -- to make locking an already-locked account idempotent rather than an error.
+--
+-- These are operator-driven ("administrative") locks only. Nothing inside
+-- authit writes here -- the automatic brute-force lockout is temporary and
+-- derived from failed_login_attempts, so it needs no storage and lifts on its
+-- own. A row here holds until your own admin surface deletes it.
 CREATE TABLE account_locks (
     user_id   uuid        PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     locked_at timestamptz NOT NULL DEFAULT now()

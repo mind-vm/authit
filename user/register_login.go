@@ -57,9 +57,16 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		return AuthResult{}, err
 	}
 	if locked {
+		// u may be nil here: the temporary lockout is keyed by email and
+		// is deliberately evaluated before the account is known to exist,
+		// so that an unknown address and a locked one behave identically.
+		actorID := ""
+		if u != nil {
+			actorID = u.ID
+		}
 		s.audit.Log(ctx, audit.Event{
 			Type: audit.EventUserLoginLocked, Result: audit.ResultDenied,
-			ActorID: u.ID, Email: email, UserAgent: userAgent, IPAddress: ipAddress,
+			ActorID: actorID, Email: email, UserAgent: userAgent, IPAddress: ipAddress,
 		})
 		return AuthResult{}, ErrAccountLocked
 	}
@@ -83,8 +90,6 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		})
 		return AuthResult{}, ErrEmailNotVerified
 	}
-	_ = s.stores.Lockouts.ClearFailedLoginAttempts(ctx, email)
-
 	totpSettings, err := s.stores.TOTP.GetTOTPSettingsByUserID(ctx, u.ID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return AuthResult{}, err
@@ -97,6 +102,13 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		return AuthResult{User: *u, RequiresTwoFactor: true, PendingTwoFactorToken: pendingToken}, nil
 	}
 
+	// The failed-attempt counter is cleared here, and in
+	// VerifyTwoFactorLogin -- but NOT after the password step alone. A
+	// correct password that still owes a second factor must not reset the
+	// counter, or an attacker holding the password would get unlimited
+	// guesses at the second factor.
+	_ = s.stores.Lockouts.ClearFailedLoginAttempts(ctx, email)
+
 	tokens, err := s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
 	if err != nil {
 		return AuthResult{}, err
@@ -108,18 +120,49 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 	return AuthResult{User: *u, Tokens: &tokens}, nil
 }
 
+// throttled reports whether email is currently in temporary lockout:
+// MaxFailedLoginAttempts or more failures inside FailedLoginWindow.
+//
+// The lockout is *derived* from the attempts table rather than stored as a
+// flag, which is what makes it self-healing -- it lifts on its own as the
+// recorded attempts age out of the window, with nothing to unlock and no
+// expiry column to keep. store.LockoutStore's LockAccount/UnlockAccount are
+// a separate, operator-driven concern and are no longer reached by a failed
+// login; see their documentation.
+//
+// It is keyed by email, not user ID, precisely so it can be evaluated
+// before the account is known to exist.
+func (s *Service) throttled(ctx context.Context, email string) (bool, error) {
+	count, err := s.stores.Lockouts.CountRecentFailedLoginAttempts(ctx, email, time.Now().Add(-s.cfg.FailedLoginWindow))
+	if err != nil {
+		return false, err
+	}
+	return count >= s.cfg.MaxFailedLoginAttempts, nil
+}
+
 // checkLockoutAndFetchUser looks up the user without leaking, via error
-// shape or timing, whether the email exists: it always checks lockout by
-// email first, and returns a nil user (not an error) if the account
-// doesn't exist.
+// shape or timing, whether the email exists: it checks the temporary
+// lockout by email *before* the user lookup, so an unknown address takes
+// the same path as a known one, and returns a nil user (not an error) if
+// the account doesn't exist.
 func (s *Service) checkLockoutAndFetchUser(ctx context.Context, email string) (locked bool, u *store.User, err error) {
+	locked, err = s.throttled(ctx, email)
+	if err != nil {
+		return false, nil, err
+	}
+
 	u, err = s.stores.Users.GetUserByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return false, nil, nil
+			return locked, nil, nil
 		}
 		return false, nil, err
 	}
+	if locked {
+		return true, u, nil
+	}
+	// Not throttled, but an operator may still have locked the account
+	// administratively.
 	locked, err = s.stores.Lockouts.IsAccountLocked(ctx, u.ID)
 	if err != nil {
 		return false, nil, err
@@ -127,6 +170,10 @@ func (s *Service) checkLockoutAndFetchUser(ctx context.Context, email string) (l
 	return locked, u, nil
 }
 
+// recordFailedLogin records one failed attempt against email. It no longer
+// locks the account: a permanent, remotely-triggerable lock let anyone who
+// knew an address disable it with a handful of wrong passwords. The
+// temporary lockout that replaces it is computed by throttled.
 func (s *Service) recordFailedLogin(ctx context.Context, email, ipAddress string) {
 	id, err := authitcrypto.NewID()
 	if err != nil {
@@ -135,13 +182,6 @@ func (s *Service) recordFailedLogin(ctx context.Context, email, ipAddress string
 	_ = s.stores.Lockouts.RecordFailedLoginAttempt(ctx, &store.FailedLoginAttempt{
 		ID: id, Email: email, IPAddress: ipAddress, CreatedAt: time.Now(),
 	})
-	count, err := s.stores.Lockouts.CountRecentFailedLoginAttempts(ctx, email, time.Now().Add(-s.cfg.FailedLoginWindow))
-	if err != nil || count < s.cfg.MaxFailedLoginAttempts {
-		return
-	}
-	if u, err := s.stores.Users.GetUserByEmail(ctx, email); err == nil {
-		_ = s.stores.Lockouts.LockAccount(ctx, u.ID)
-	}
 }
 
 // Refresh exchanges a valid, unrevoked refresh token for a new token pair,

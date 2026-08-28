@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"time"
 
@@ -169,9 +170,12 @@ func (s *Service) getDecryptedTOTPSettings(ctx context.Context, userID string) (
 // settings in place but does not persist the change — callers that need
 // the consumption to stick must call UpdateTOTPSettings themselves.
 func consumeBackupCode(settings *store.TOTPSettings, code string) bool {
-	hash := authitcrypto.HashBackupCode(code)
+	hash := []byte(authitcrypto.HashBackupCode(code))
 	for i, h := range settings.RecoveryCodeHashes {
-		if h == hash {
+		// Constant-time: these are hashes rather than the codes
+		// themselves, so a timing leak here is weak, but the comparison is
+		// on the hot path of a credential check and subtle costs nothing.
+		if subtle.ConstantTimeCompare([]byte(h), hash) == 1 {
 			settings.RecoveryCodeHashes = append(settings.RecoveryCodeHashes[:i], settings.RecoveryCodeHashes[i+1:]...)
 			settings.RecoveryCodesUsed++
 			return true
@@ -215,6 +219,31 @@ func (s *Service) VerifyTwoFactorLogin(ctx context.Context, pendingToken, code, 
 		return AuthResult{}, ErrInvalidToken
 	}
 
+	// The user is resolved up front because every branch below needs the
+	// email address: the second factor shares the first factor's
+	// failed-attempt counter, which is keyed by email.
+	u, err := s.stores.Users.GetUserByID(ctx, pending.UserID)
+	if err != nil {
+		return AuthResult{}, err
+	}
+
+	// Without this the second factor would be unmetered. Authenticate
+	// deliberately does not clear the counter after a correct password, so
+	// an attacker who holds the password gets MaxFailedLoginAttempts
+	// guesses per FailedLoginWindow here -- and cannot mint a fresh pending
+	// session to escape it, because Authenticate consults the same counter.
+	locked, err := s.throttled(ctx, u.Email)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	if locked {
+		s.audit.Log(ctx, audit.Event{
+			Type: audit.EventUserLoginLocked, Result: audit.ResultDenied, ActorID: u.ID, Email: u.Email,
+			UserAgent: userAgent, IPAddress: ipAddress, Metadata: map[string]any{"stage": "two_factor"},
+		})
+		return AuthResult{}, ErrAccountLocked
+	}
+
 	settings, secret, err := s.getDecryptedTOTPSettings(ctx, pending.UserID)
 	if err != nil {
 		return AuthResult{}, err
@@ -227,6 +256,7 @@ func (s *Service) VerifyTwoFactorLogin(ctx context.Context, pendingToken, code, 
 		}
 	}
 	if !valid {
+		s.recordFailedLogin(ctx, u.Email, ipAddress)
 		s.audit.Log(ctx, audit.Event{
 			Type: audit.EventUserLoginFailed, Result: audit.ResultFailure, ActorID: pending.UserID,
 			UserAgent: userAgent, IPAddress: ipAddress, Metadata: map[string]any{"reason": "invalid_two_factor"},
@@ -235,11 +265,10 @@ func (s *Service) VerifyTwoFactorLogin(ctx context.Context, pendingToken, code, 
 	}
 
 	_ = s.stores.PendingTwoFactor.DeletePendingTwoFactorSession(ctx, pending.ID)
+	// Both factors are now satisfied -- this is the point at which the
+	// login has actually succeeded, so this is where the counter resets.
+	_ = s.stores.Lockouts.ClearFailedLoginAttempts(ctx, u.Email)
 
-	u, err := s.stores.Users.GetUserByID(ctx, pending.UserID)
-	if err != nil {
-		return AuthResult{}, err
-	}
 	tokens, err := s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
 	if err != nil {
 		return AuthResult{}, err

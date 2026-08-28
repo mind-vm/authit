@@ -148,19 +148,39 @@ type FailedLoginAttempt struct {
 
 // LockoutStore tracks failed logins and account lockout state.
 //
-// It needs TWO tables, which is not visible from the types above. One holds
-// FailedLoginAttempt rows (keyed by email, per that type's doc). The second
-// holds the set of currently-locked accounts, and has no canonical authit
-// type at all: LockAccount, IsAccountLocked and UnlockAccount are
-// insert/exists/delete over a set of user ids, not CRUD over a struct, so its
-// shape is entirely yours. All authit requires is that its user-id column is
-// UNIQUE, so locking an already-locked account is idempotent rather than an
-// error.
+// It needs TWO tables, which is not visible from the types above, and they
+// back two DIFFERENT concepts -- do not conflate them:
 //
-// Implementing only the attempts table compiles cleanly and fails at runtime.
-// See schema.sql (`account_locks`).
+//  1. The attempts table (FailedLoginAttempt rows, keyed by email) backs the
+//     *temporary* lockout. authit does not store that lockout anywhere: it
+//     derives it by counting recent attempts, so it lifts on its own as they
+//     age out of the window. This is the automatic brute-force control, and
+//     it is the only one a failed login triggers.
+//
+//  2. The locks table backs the *administrative* lock -- an operator
+//     disabling an account until an operator re-enables it. It has no
+//     canonical authit type at all: LockAccount, IsAccountLocked and
+//     UnlockAccount are insert/exists/delete over a set of user ids, not CRUD
+//     over a struct, so its shape is entirely yours. All authit requires is
+//     that its user-id column is UNIQUE, so locking an already-locked account
+//     is idempotent rather than an error.
+//
+// Nothing inside authit calls LockAccount or UnlockAccount; they exist for
+// the host to call. Earlier versions locked an account automatically after
+// MaxFailedLoginAttempts, which -- because the lock had no expiry and nothing
+// ever cleared it -- let anyone who knew an address disable it permanently
+// with a handful of wrong passwords. If you are upgrading, note that rows
+// written to your locks table by that behaviour are still honoured and must
+// be cleared manually.
+//
+// Implementing only the attempts table compiles cleanly, and every automatic
+// control still works; IsAccountLocked is then the only method reached, on
+// every login. See schema.sql (`account_locks`).
 type LockoutStore interface {
 	RecordFailedLoginAttempt(ctx context.Context, a *FailedLoginAttempt) error
+	// CountRecentFailedLoginAttempts is called on every login attempt, not
+	// only on failures -- it is what the temporary lockout is derived from.
+	// Index (email, created_at).
 	CountRecentFailedLoginAttempts(ctx context.Context, email string, since time.Time) (int, error)
 	ClearFailedLoginAttempts(ctx context.Context, email string) error
 	LockAccount(ctx context.Context, userID string) error

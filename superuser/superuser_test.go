@@ -1,6 +1,7 @@
 package superuser_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -159,5 +160,46 @@ func TestImpersonateProducesUserPlaneToken(t *testing.T) {
 	// And it must NOT be accepted by the superuser plane (no audience).
 	if _, err := suSvc.Verify(token); !errors.Is(err, superuser.ErrInvalidToken) {
 		t.Fatalf("expected impersonation token to be rejected by superuser plane, got %v", err)
+	}
+}
+
+// TestFailedLoginsDoNotWriteAdministrativeLock mirrors the user plane: a
+// failed superuser login must not write a permanent lock row. The
+// brute-force control is a temporary lockout derived from the attempts
+// table, so it lifts on its own; LockAccount is left to the host.
+func TestFailedLoginsDoNotWriteAdministrativeLock(t *testing.T) {
+	ctx := context.Background()
+	lockouts := memstore.NewLockoutStore()
+	stores := superuser.Stores{
+		Superusers:    memstore.NewSuperuserStore(),
+		RefreshTokens: memstore.NewSuperuserRefreshTokenStore(),
+		Lockouts:      lockouts,
+	}
+	svc, err := superuser.NewService(stores, newSigner(t), superuser.Config{
+		MaxFailedLoginAttempts: 3,
+		FailedLoginWindow:      time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	su, err := svc.Bootstrap(ctx, "ops@example.com", "correct-pw", "Ops")
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	for i := 0; i < 4; i++ {
+		if _, err := svc.Authenticate(ctx, "ops@example.com", "wrong-pw", "ua", "ip"); err == nil {
+			t.Fatal("expected failure")
+		}
+	}
+	locked, err := lockouts.IsAccountLocked(ctx, su.ID)
+	if err != nil {
+		t.Fatalf("IsAccountLocked: %v", err)
+	}
+	if locked {
+		t.Fatal("failed logins must not write an administrative lock")
+	}
+	if _, err := svc.Authenticate(ctx, "ops@example.com", "correct-pw", "ua", "ip"); !errors.Is(err, superuser.ErrAccountLocked) {
+		t.Fatalf("expected ErrAccountLocked while throttled, got %v", err)
 	}
 }

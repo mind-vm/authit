@@ -45,11 +45,17 @@ type Config struct {
 	// PendingTwoFactorTTL is how long a caller has to complete the 2FA step
 	// after a correct password before having to log in again.
 	PendingTwoFactorTTL time.Duration
-	// MaxFailedLoginAttempts is how many recent failed logins lock the
-	// account.
+	// MaxFailedLoginAttempts is how many recent failed logins put an
+	// address into temporary lockout. Both the password step and the
+	// second-factor step count against it, and it is only reset once a
+	// login fully succeeds -- so an attacker holding a valid password gets
+	// this many guesses at the second factor per FailedLoginWindow, not
+	// unlimited guesses.
 	MaxFailedLoginAttempts int
 	// FailedLoginWindow is the lookback window used when counting recent
-	// failed attempts.
+	// failed attempts, and therefore also how long a temporary lockout
+	// lasts: it lifts once the recorded attempts age out. Nothing has to
+	// unlock the account, and no operator action is required.
 	FailedLoginWindow time.Duration
 	// TOTPIssuer is the issuer name embedded in generated TOTP QR codes.
 	TOTPIssuer string

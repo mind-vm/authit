@@ -107,6 +107,15 @@ func TestGenerateBackupCodes(t *testing.T) {
 			t.Fatalf("duplicate backup code %q", c)
 		}
 		seen[c] = true
+		// A recovery code is a full bypass of the second factor, so it is
+		// sized as a standalone credential. This was 32 bits once, which
+		// is brute-forceable; pin the width so it cannot shrink again.
+		if want := authitcrypto.BackupCodeBytes * 2; len(c) != want {
+			t.Fatalf("backup code %q is %d hex chars, want %d (%d bits)", c, len(c), want, authitcrypto.BackupCodeBytes*8)
+		}
+		if authitcrypto.BackupCodeBytes < 8 {
+			t.Fatalf("BackupCodeBytes = %d: recovery codes need at least 64 bits", authitcrypto.BackupCodeBytes)
+		}
 		if authitcrypto.HashBackupCode(c) != authitcrypto.HashToken(c) {
 			t.Fatal("HashBackupCode should equal HashToken for the same input")
 		}

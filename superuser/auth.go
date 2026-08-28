@@ -14,6 +14,20 @@ import (
 // Authenticate verifies email/password against the superuser table and
 // issues a token pair scoped to this plane's audience.
 func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, ipAddress string) (TokenPair, error) {
+	// Checked before the account lookup, and keyed by email, so an unknown
+	// address and a throttled one behave identically.
+	throttled, err := s.throttled(ctx, email)
+	if err != nil {
+		return TokenPair{}, err
+	}
+	if throttled {
+		s.audit.Log(ctx, audit.Event{
+			Type: audit.EventSuperuserLoginLocked, Result: audit.ResultDenied,
+			Email: email, UserAgent: userAgent, IPAddress: ipAddress,
+		})
+		return TokenPair{}, ErrAccountLocked
+	}
+
 	su, err := s.stores.Superusers.GetSuperuserByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -74,6 +88,25 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 	return tokens, nil
 }
 
+// throttled reports whether email is in temporary lockout:
+// MaxFailedLoginAttempts or more failures inside FailedLoginWindow. Like
+// the user plane's equivalent it is derived from the attempts table rather
+// than stored, so it lifts on its own as attempts age out. Always false
+// when Stores.Lockouts is nil.
+func (s *Service) throttled(ctx context.Context, email string) (bool, error) {
+	if s.stores.Lockouts == nil {
+		return false, nil
+	}
+	count, err := s.stores.Lockouts.CountRecentFailedLoginAttempts(ctx, email, time.Now().Add(-s.cfg.FailedLoginWindow))
+	if err != nil {
+		return false, err
+	}
+	return count >= s.cfg.MaxFailedLoginAttempts, nil
+}
+
+// recordFailedLogin records one failed attempt against email. It no longer
+// locks the account -- see the user plane's recordFailedLogin for why, and
+// store.LockoutStore for what LockAccount now means.
 func (s *Service) recordFailedLogin(ctx context.Context, email string) {
 	if s.stores.Lockouts == nil {
 		return
@@ -85,13 +118,6 @@ func (s *Service) recordFailedLogin(ctx context.Context, email string) {
 	_ = s.stores.Lockouts.RecordFailedLoginAttempt(ctx, &store.FailedLoginAttempt{
 		ID: id, Email: email, CreatedAt: time.Now(),
 	})
-	count, err := s.stores.Lockouts.CountRecentFailedLoginAttempts(ctx, email, time.Now().Add(-s.cfg.FailedLoginWindow))
-	if err != nil || count < s.cfg.MaxFailedLoginAttempts {
-		return
-	}
-	if su, err := s.stores.Superusers.GetSuperuserByEmail(ctx, email); err == nil {
-		_ = s.stores.Lockouts.LockAccount(ctx, su.ID)
-	}
 }
 
 // Refresh exchanges a valid, unrevoked superuser refresh token for a new

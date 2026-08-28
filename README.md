@@ -164,7 +164,7 @@ authit ships no DDL and no migrations — every package depends only on the `sto
 
 Three things `store/*.go` will not tell you, and the reason the reference exists:
 
-- `LockoutStore` needs **two** tables. The second — the set of currently-locked accounts — has no authit type at all, so nothing in `store/user.go` hints it exists. Implement only the attempts table and it compiles cleanly, then fails at runtime.
+- `LockoutStore` needs **two** tables, backing two different concepts. The attempts table backs the *temporary* lockout, which authit derives by counting recent failures rather than storing — so it lifts on its own, with nothing to unlock. The second table is the set of *administratively* locked accounts; it has no authit type at all, so nothing in `store/user.go` hints it exists, and nothing inside authit writes to it — `LockAccount`/`UnlockAccount` are there for your own admin surface.
 - `store.TOTPSettings` does not use the column names you'd guess: the fields are `Enabled`, `VerifiedAt`, `RecoveryCodeHashes` and `RecoveryCodesUsed` — not `confirmed` and `backup_codes`.
 - `RecoveryCodeHashes` is a `[]string` with no obvious storage. `text[]`, a join table and JSON are all fine; the choice is silently yours and it changes your adapter.
 
@@ -174,9 +174,22 @@ Three things `store/*.go` will not tell you, and the reason the reference exists
 - **Email delivery.** `user.EmailSender` is an interface; bring your own SMTP/API client.
 - **Social/OAuth login, RBAC policy engines.** Out of scope for now; `team.Role` and `store.Member.Role` are plain strings you can extend.
 
+## Brute-force protection
+
+Failed logins are counted per email address over `Config.FailedLoginWindow` (15 minutes by default). Once `Config.MaxFailedLoginAttempts` (5) is reached the address is in *temporary lockout* and `Authenticate` returns `ErrAccountLocked` until the recorded attempts age out. Nothing is stored and nothing has to unlock it.
+
+Two properties are worth knowing, because both were bugs once:
+
+- **The second factor shares the counter.** A correct password does *not* reset it — only a fully completed login does, which means `VerifyTwoFactorLogin` too. An attacker holding a valid password therefore gets `MaxFailedLoginAttempts` guesses at the TOTP code per window, not unlimited guesses, and cannot re-run `Authenticate` to mint a fresh pending session to escape it.
+- **Failed logins never lock an account permanently.** `LockoutStore.LockAccount` is not called by authit at all; it is an operator-driven administrative lock, and `Authenticate` honours it, but only your own code sets it.
+
+Per-IP rate limiting is still yours: the lockout is account-scoped by design (so a distributed attack is still caught), which means an attacker who knows an address can trigger a *temporary* denial of service against it. Put a rate limiter in front of your login route.
+
 ## Status
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
+
+Known gaps to weigh before production use: passwords are hashed with bcrypt and the algorithm is not yet pluggable; there is no password-strength policy (`Register` accepts any non-empty string); email addresses are not normalised, so case handling depends on your store's collation; and `jwt` ships only an HMAC signer, so any service that validates a token can also mint one. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 
