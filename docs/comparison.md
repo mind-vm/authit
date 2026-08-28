@@ -677,11 +677,44 @@ Three details worth recording:
 and a `Path` scoped to the refresh route. Same justification as the existing bearer-parsing
 exception: it is short, identical everywhere, and quietly security-critical.
 
-**T1.6 — A store conformance suite.** An exported `storetest` package with
-`storetest.RunUserStore(t, factory)` and one function per port, asserting `ErrNotFound` semantics,
-email case handling, idempotency of `LockAccount`, and revocation behaviour. `memstore` and
-`sqlbstore` both run it. This is cheap, it deletes duplicated tests, and it is the only way the
-storage-port design stays honest as adapters multiply.
+**T1.6 — A store conformance suite.** ✅ *Done.* New `storetest` package: `RunAll` plus one `Run*`
+per port, 53 subtests. `memstore` runs it (it had **no test files at all** before — its correctness was
+asserted only indirectly, by the service packages that happen to use it), and `sqlbstore` runs it
+against the reference `schema.sql` when a Postgres DSN is configured.
+
+It pins the contract rather than the happy path, which is the point: a flow test only exercises the
+paths a service happens to take, while the failures that matter here are the ones a happy path never
+notices. Several assertions exist specifically because earlier work in this document made them
+load-bearing —
+
+- *A revoked refresh token is still returned by hash.* Filtering it out looks tidy and silently
+  disables T0.7's reuse detection. Verified by breaking `memstore` deliberately: the suite fails and
+  names the property, where previously the only signal was a service-level test failing three layers
+  away.
+- *`CountRecentFailedLoginAttempts` honours `since`.* T0.3 made the temporary lockout derived from
+  this count, so an adapter ignoring the parameter turns the throttle back into a permanent lock —
+  reintroducing the exact defect T0.3 removed.
+- *`LockoutStore` needs its second table, and `LockAccount` is idempotent.* The documented footgun,
+  now executable.
+- *`ErrNotFound` is the only way to say "no such row".*
+
+Two design points, both discovered by trying to point it at a real schema rather than at `memstore`:
+
+- **Identifiers are UUID-shaped.** `"u1"` works fine in memory and is rejected outright by a Postgres
+  `uuid` column, so a suite written that way would only ever run against the adapter that needed it
+  least.
+- **`Fixtures` hooks exist because foreign keys do.** Each suite exercises one port in isolation and
+  therefore creates rows referring to users and teams that do not exist. Against `memstore` that is
+  fine; against `schema.sql` the database rejects it, and the suite would be reporting a constraint
+  the interfaces never promised.
+
+*Scope:* `sqlbstore`'s wiring covers the user plane, reusing the row types `example_test.go` already
+defines; the team, PAT, device and superuser adapters would each need example row types first. And
+the sqlbstore half is **unverified against a live database** — no Postgres was available where this
+was written, so it compiles and skips. `memstore`'s half runs on every `go test ./...`.
+
+*Changed:* `storetest/` (new), `memstore/memstore_test.go` (new), `sqlbstore/conformance_test.go`
+(new), `sqlbstore/example_test.go` (its schema helper now returns the pool too).
 
 ### Tier 2 — feature scope, in the order that pays
 

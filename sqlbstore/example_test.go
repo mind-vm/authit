@@ -370,11 +370,12 @@ func TestExampleUserStoresSatisfyUserService(t *testing.T) {
 // and returns an executor scoped to it, so the reference schema is exercised
 // under its real table names without colliding with anything in the target
 // database.
-func referenceSchemaPool(t *testing.T) sqlb.Executor {
+func referenceSchemaPool(t *testing.T) (sqlb.Executor, *pgxpool.Pool) {
 	t.Helper()
 	dsn := os.Getenv("MYBRAIN_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("MYBRAIN_DATABASE_URL not set; skipping reference-schema integration test")
+		return nil, nil
 	}
 	ddl, err := os.ReadFile("../schema.sql")
 	if err != nil {
@@ -407,7 +408,9 @@ func referenceSchemaPool(t *testing.T) sqlb.Executor {
 	if _, err := pool.Exec(ctx, string(ddl)); err != nil {
 		t.Fatalf("applying ../schema.sql: %v", err)
 	}
-	return sqlb.New(pool)
+	// The raw pool comes back too, so a caller can truncate between
+	// subtests and insert fixture rows that foreign keys require.
+	return sqlb.New(pool), pool
 }
 
 // TestExampleUserStoresAgainstReferenceSchema drives the real user flows
@@ -415,7 +418,7 @@ func referenceSchemaPool(t *testing.T) sqlb.Executor {
 // two -- a renamed column, a missing table, a type that won't round-trip --
 // fails here rather than in a consumer's port.
 func TestExampleUserStoresAgainstReferenceSchema(t *testing.T) {
-	db := referenceSchemaPool(t)
+	db, _ := referenceSchemaPool(t)
 	svc, err := user.NewService(exampleUserStores(db), exampleSigner(t), nil, user.Config{
 		MaxFailedLoginAttempts: 3,
 	})

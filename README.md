@@ -171,6 +171,40 @@ userSvc, _ := user.NewService(stores, signer, emailer, user.Config{
 
 `audit.SlogLogger` covers the common case of wanting these events in application logs (`ResultFailure`/`ResultDenied` log at Warn, everything else at Info). For a compliance trail (SOC2, GDPR, PCI-DSS) or a dedicated event pipeline, implement `audit.Logger` yourself — it's one method, `Log(ctx, audit.Event)`, and takes no error return: delivery guarantees (retry, buffering, an outbox) are the implementation's concern, not authit's, and a logging failure never affects the outcome of the operation being audited.
 
+## Checking your adapter (`storetest`)
+
+authit's whole design rests on you implementing the `store` ports, and nothing in the library can check that you got them right. An adapter that returns a nil pointer instead of `store.ErrNotFound`, or that filters revoked rows out of a lookup, compiles perfectly and fails at runtime — sometimes as a security bug rather than an outage. [`storetest`](storetest) is where those expectations are written down executably:
+
+```go
+func TestMyStores(t *testing.T) {
+	storetest.RunAll(t, storetest.Stores{
+		Users:         func(t *testing.T) store.UserStore { return newUserStore(t) },
+		RefreshTokens: func(t *testing.T) store.RefreshTokenStore { return newRefreshTokenStore(t) },
+		// ...one factory per port you implement; nil fields are skipped.
+	})
+}
+```
+
+Each factory returns an empty store and may use `t.Cleanup` for teardown. If your schema has foreign keys, supply `Fixtures` so the suite can create the rows they require:
+
+```go
+storetest.Stores{
+	Fixtures: storetest.Fixtures{EnsureUser: func(t *testing.T, userID string) { /* insert */ }},
+	// ...
+}
+```
+
+Some of what it pins, and why each one is a bug you would otherwise ship:
+
+- **`ErrNotFound` is the only way to say "no such row."** Every service branches on `errors.Is(err, store.ErrNotFound)` and treats anything else as a fault, so a bare `sql.ErrNoRows` turns "this email is free" into a 500.
+- **A revoked refresh token is still returned by hash.** Filtering it out looks tidy and silently disables refresh-token reuse detection: a replayed stolen token becomes indistinguishable from an unknown one.
+- **`CountRecentFailedLoginAttempts` honours `since`.** The temporary lockout is derived from that count, so ignoring the parameter turns a 15-minute throttle back into a permanent lock.
+- **`LockoutStore` really does need its second table**, and `LockAccount` is idempotent — which is why its user-id column must be `UNIQUE`.
+- **`RecoveryCodeHashes` round-trips in order, including when empty.** It is a `[]string` with no obvious storage, so it is the field most likely to be dropped — and it fails only once somebody has lost their phone.
+- **Scoped operations stay scoped.** Listing one team's members, revoking one user's tokens.
+
+The suite runs against `memstore` on every `go test ./...`, and against `sqlbstore` and the reference `schema.sql` when a Postgres DSN is configured.
+
 ## Database schema
 
 authit ships no DDL and no migrations — every package depends only on the `store` interfaces, and your schema is yours. But the required table set shouldn't have to be reverse-engineered from struct definitions one type at a time, so there's a reference:
@@ -296,7 +330,7 @@ Leaving the field nil disables the control rather than breaking, the same shape 
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: there is no transaction boundary in the `store` ports, so multi-write flows are not atomic. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: there is no transaction boundary in the `store` ports, so multi-write flows are not atomic; and there are no lifecycle hooks, so extending a flow means wrapping the service method yourself. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 
