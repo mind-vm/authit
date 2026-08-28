@@ -803,12 +803,32 @@ Two design points, both discovered by trying to point it at a real schema rather
   the interfaces never promised.
 
 *Scope:* `sqlbstore`'s wiring covers the user plane, reusing the row types `example_test.go` already
-defines; the team, PAT, device and superuser adapters would each need example row types first. And
-the sqlbstore half is **unverified against a live database** — no Postgres was available where this
-was written, so it compiles and skips. `memstore`'s half runs on every `go test ./...`.
+defines; the team, PAT, device and superuser adapters would each need example row types first.
+`memstore`'s half runs on every `go test ./...`.
+
+*Verified against a live database.* ✅ This was written unverified — no Postgres was reachable at the
+time, so `sqlbstore` compiled and skipped — and was named the most valuable thing to do next. It has
+now been run against Postgres 18, under `-race`, and **the first run failed twice**. Both were real,
+and neither was reachable from `memstore`:
+
+1. **The example wiring dropped the caller's `CreatedAt` on `failed_login_attempts`**, letting the
+   column's `DEFAULT now()` stand in. Every attempt therefore landed at the database's clock instead
+   of the one the caller counts with, so an hour-old failure counted as recent — the conformance
+   suite's `since` case caught it exactly as it was written to. Harmless in authit's own use, which
+   passes `time.Now()` anyway, but the example is what a host copies, and copying it reinstates the
+   permanent lockout T0's derived design was introduced to remove. `sqlb` writes `DEFAULT` for a zero
+   time, so carrying the field through costs a host nothing.
+2. **The flow test's `ListSessions` expectation was stale.** It asserted one live session *after*
+   deliberately replaying a rotated refresh token — written before reuse-as-compromise landed, and
+   never run since, because this file has never executed. Family revocation is correct; the
+   assertion was not. Reordered to check the session list before the replay, and a new assertion now
+   covers what reuse actually does. Reverting `revokeFamilyOnReuse` confirms that one fails.
+
+That is the case for integration tests that actually run: neither bug was visible to the in-memory
+suite, and one of them was in the code the README points hosts at.
 
 *Changed:* `storetest/` (new), `memstore/memstore_test.go` (new), `sqlbstore/conformance_test.go`
-(new), `sqlbstore/example_test.go` (its schema helper now returns the pool too).
+(new), `sqlbstore/example_test.go` (its schema helper now returns the pool too; the two fixes above).
 
 ### Tier 2 — feature scope, in the order that pays
 

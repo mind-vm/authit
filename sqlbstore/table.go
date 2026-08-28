@@ -18,6 +18,26 @@
 // UpdateRows(...).Set(...) rather than an upsert — see ToUpdateColumns for
 // why they can't share one code path despite both starting from the same
 // T.
+//
+// # Running the tests
+//
+// Every test in this package needs a real Postgres and skips without one,
+// so a bare `go test ./...` here is green whether or not the adapters
+// work. Point MYBRAIN_DATABASE_URL at any reachable Postgres to actually
+// run them:
+//
+//	MYBRAIN_DATABASE_URL=postgres://user:pass@localhost:5432/db go test ./... -race
+//
+// The name is historical; this package has no relation to mybrain's
+// schema and any database will do. The tests are self-contained: the
+// conformance and flow tests create, use and drop an isolated
+// authit_reference_schema_test schema, and the per-adapter tests create
+// and drop their own sqlbstore_test_* tables. Nothing else in the target
+// database is touched, but prefer a scratch database anyway.
+//
+// Do not treat a skipped run as a passing one. Both bugs the first live
+// run found were invisible to the in-memory suite — see the T1.6 section
+// of docs/comparison.md.
 package sqlbstore
 
 import (

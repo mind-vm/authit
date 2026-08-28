@@ -320,7 +320,19 @@ func exampleUserStores(db sqlb.Executor) user.Stores {
 		Lockouts: sqlbstore.LockoutAdapter[exampleFailedLogin, exampleAccountLock]{
 			Attempts: sqlbstore.Table[exampleFailedLogin, store.FailedLoginAttempt]{
 				ToRow: func(f store.FailedLoginAttempt) exampleFailedLogin {
-					return exampleFailedLogin{Email: f.Email, IPAddress: f.IPAddress}
+					// CreatedAt is carried through, unlike the other row
+					// types here that let the column default. It is not
+					// decoration on this table: the temporary lockout is
+					// derived by counting attempts newer than a `since`
+					// the caller computes from its own clock, so the row
+					// has to carry that same clock's timestamp. Dropping
+					// it makes every attempt land at the database's
+					// now(), which counts an hour-old failure as recent
+					// and turns a 15-minute throttle back into a
+					// permanent lock. The `default` tag still applies:
+					// sqlb writes DEFAULT for a zero time, so a host that
+					// genuinely wants now() can leave it unset.
+					return exampleFailedLogin{Email: f.Email, IPAddress: f.IPAddress, CreatedAt: f.CreatedAt}
 				},
 				FromRow: func(r exampleFailedLogin) store.FailedLoginAttempt {
 					return store.FailedLoginAttempt{
@@ -460,17 +472,36 @@ func TestExampleUserStoresAgainstReferenceSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if _, err := svc.Refresh(ctx, result.Tokens.RefreshToken, "ua", "127.0.0.1"); !errors.Is(err, user.ErrInvalidToken) {
-		t.Fatal("expected the rotated-away refresh token to be revoked")
-	}
 
 	// refresh_tokens SELECT by user_id, filtered on revoked_at/expires_at.
+	// This runs BEFORE the reuse below, deliberately: replaying a rotated
+	// token is treated as a compromise and revokes the whole family, so
+	// afterwards there is correctly nothing left to list.
 	sessions, err := svc.ListSessions(ctx, u.ID, rotated.RefreshToken)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
 	if len(sessions) != 1 || !sessions[0].IsCurrent {
 		t.Fatalf("expected exactly one current session, got %+v", sessions)
+	}
+
+	// Replaying the token that was already rotated away: refused, and the
+	// refusal is indistinguishable from a garbage token.
+	if _, err := svc.Refresh(ctx, result.Tokens.RefreshToken, "ua", "127.0.0.1"); !errors.Is(err, user.ErrInvalidToken) {
+		t.Fatal("expected the rotated-away refresh token to be revoked")
+	}
+
+	// refresh_tokens UPDATE revoked_at across every row for the user --
+	// the family revocation that reuse triggers. A replayed token means
+	// either the old or the new one is in someone else's hands and there
+	// is no way to tell which, so both go. Asserting it here is what
+	// proves the bulk UPDATE reaches real rows and not just the one.
+	sessions, err = svc.ListSessions(ctx, u.ID, rotated.RefreshToken)
+	if err != nil {
+		t.Fatalf("ListSessions after reuse: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("reuse must revoke the whole family, still have %+v", sessions)
 	}
 
 	// failed_login_attempts INSERT + COUNT, then account_locks INSERT --
