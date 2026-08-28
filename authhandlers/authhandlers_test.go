@@ -89,12 +89,12 @@ func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 func TestRegisterAndLogin(t *testing.T) {
 	h, _, _ := newTestServer(t)
 
-	rec := doJSON(t, h, "POST", "/register", map[string]string{"email": "alice@example.com", "password": "s3cret!!"}, "")
+	rec := doJSON(t, h, "POST", "/register", map[string]string{"email": "alice@example.com", "password": "s3cret-passphrase!!"}, "")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("register: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	rec = doJSON(t, h, "POST", "/register", map[string]string{"email": "alice@example.com", "password": "s3cret!!"}, "")
+	rec = doJSON(t, h, "POST", "/register", map[string]string{"email": "alice@example.com", "password": "s3cret-passphrase!!"}, "")
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("duplicate register: status = %d, want 409", rec.Code)
 	}
@@ -104,7 +104,7 @@ func TestRegisterAndLogin(t *testing.T) {
 		t.Fatalf("bad login: status = %d, want 401", rec.Code)
 	}
 
-	rec = doJSON(t, h, "POST", "/login", map[string]string{"email": "alice@example.com", "password": "s3cret!!"}, "")
+	rec = doJSON(t, h, "POST", "/login", map[string]string{"email": "alice@example.com", "password": "s3cret-passphrase!!"}, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -133,8 +133,8 @@ func TestProtectedRouteRequiresBearer(t *testing.T) {
 func TestPasswordChangeAndSessionLifecycle(t *testing.T) {
 	h, _, _ := newTestServer(t)
 
-	doJSON(t, h, "POST", "/register", map[string]string{"email": "bob@example.com", "password": "s3cret!!"}, "")
-	rec := doJSON(t, h, "POST", "/login", map[string]string{"email": "bob@example.com", "password": "s3cret!!"}, "")
+	doJSON(t, h, "POST", "/register", map[string]string{"email": "bob@example.com", "password": "s3cret-passphrase!!"}, "")
+	rec := doJSON(t, h, "POST", "/login", map[string]string{"email": "bob@example.com", "password": "s3cret-passphrase!!"}, "")
 	type tokenResponse struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
@@ -158,13 +158,13 @@ func TestPasswordChangeAndSessionLifecycle(t *testing.T) {
 	}
 
 	rec = doJSON(t, h, "POST", "/password/change", map[string]string{
-		"current_password": "s3cret!!", "new_password": "n3wpassword!!",
+		"current_password": "s3cret-passphrase!!", "new_password": "n3wpassword!!",
 	}, access)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("change password: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	rec = doJSON(t, h, "POST", "/login", map[string]string{"email": "bob@example.com", "password": "s3cret!!"}, "")
+	rec = doJSON(t, h, "POST", "/login", map[string]string{"email": "bob@example.com", "password": "s3cret-passphrase!!"}, "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("login with old password after change: status = %d, want 401", rec.Code)
 	}

@@ -3,9 +3,11 @@ package superuser_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	authitcrypto "github.com/mind-vm/authit/crypto"
 	authitjwt "github.com/mind-vm/authit/jwt"
 	"github.com/mind-vm/authit/memstore"
 	"github.com/mind-vm/authit/superuser"
@@ -42,10 +44,10 @@ func TestBootstrapOnlyOnce(t *testing.T) {
 	svc := newTestService(t)
 	ctx := t.Context()
 
-	if _, err := svc.Bootstrap(ctx, "root@example.com", "s3cret!!", "Root"); err != nil {
+	if _, err := svc.Bootstrap(ctx, "root@example.com", "s3cret-passphrase!!", "Root"); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
-	if _, err := svc.Bootstrap(ctx, "someone-else@example.com", "s3cret!!", "Someone"); !errors.Is(err, superuser.ErrAlreadyBootstrapped) {
+	if _, err := svc.Bootstrap(ctx, "someone-else@example.com", "s3cret-passphrase!!", "Someone"); !errors.Is(err, superuser.ErrAlreadyBootstrapped) {
 		t.Fatalf("expected ErrAlreadyBootstrapped, got %v", err)
 	}
 }
@@ -53,11 +55,11 @@ func TestBootstrapOnlyOnce(t *testing.T) {
 func TestAuthenticateAndRefresh(t *testing.T) {
 	svc := newTestService(t)
 	ctx := t.Context()
-	if _, err := svc.Bootstrap(ctx, "root@example.com", "s3cret!!", "Root"); err != nil {
+	if _, err := svc.Bootstrap(ctx, "root@example.com", "s3cret-passphrase!!", "Root"); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 
-	tokens, err := svc.Authenticate(ctx, "root@example.com", "s3cret!!", "ua", "ip")
+	tokens, err := svc.Authenticate(ctx, "root@example.com", "s3cret-passphrase!!", "ua", "ip")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -97,7 +99,7 @@ func TestAudienceSeparationFromUserPlane(t *testing.T) {
 		t.Fatalf("superuser.NewService: %v", err)
 	}
 	ctx := t.Context()
-	if _, err := suSvc.Bootstrap(ctx, "root@example.com", "s3cret!!", "Root"); err != nil {
+	if _, err := suSvc.Bootstrap(ctx, "root@example.com", "s3cret-passphrase!!", "Root"); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 
@@ -116,7 +118,7 @@ func TestAudienceSeparationFromUserPlane(t *testing.T) {
 func TestDeactivateCannotTargetSelf(t *testing.T) {
 	svc := newTestService(t)
 	ctx := t.Context()
-	su, err := svc.Bootstrap(ctx, "root@example.com", "s3cret!!", "Root")
+	su, err := svc.Bootstrap(ctx, "root@example.com", "s3cret-passphrase!!", "Root")
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
@@ -136,7 +138,7 @@ func TestImpersonateProducesUserPlaneToken(t *testing.T) {
 		t.Fatalf("superuser.NewService: %v", err)
 	}
 	ctx := t.Context()
-	su, err := suSvc.Bootstrap(ctx, "root@example.com", "s3cret!!", "Root")
+	su, err := suSvc.Bootstrap(ctx, "root@example.com", "s3cret-passphrase!!", "Root")
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
@@ -182,13 +184,13 @@ func TestFailedLoginsDoNotWriteAdministrativeLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	su, err := svc.Bootstrap(ctx, "ops@example.com", "correct-pw", "Ops")
+	su, err := svc.Bootstrap(ctx, "ops@example.com", "correct-horse-battery", "Ops")
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 
 	for i := 0; i < 4; i++ {
-		if _, err := svc.Authenticate(ctx, "ops@example.com", "wrong-pw", "ua", "ip"); err == nil {
+		if _, err := svc.Authenticate(ctx, "ops@example.com", "wrong-horse-battery", "ua", "ip"); err == nil {
 			t.Fatal("expected failure")
 		}
 	}
@@ -199,7 +201,55 @@ func TestFailedLoginsDoNotWriteAdministrativeLock(t *testing.T) {
 	if locked {
 		t.Fatal("failed logins must not write an administrative lock")
 	}
-	if _, err := svc.Authenticate(ctx, "ops@example.com", "correct-pw", "ua", "ip"); !errors.Is(err, superuser.ErrAccountLocked) {
+	if _, err := svc.Authenticate(ctx, "ops@example.com", "correct-horse-battery", "ua", "ip"); !errors.Is(err, superuser.ErrAccountLocked) {
 		t.Fatalf("expected ErrAccountLocked while throttled, got %v", err)
+	}
+}
+
+// TestSuperuserPasswordPolicyAndHashUpgrade covers both halves on the
+// operator plane: weak passwords are refused when an account is created,
+// and an existing bcrypt hash is upgraded on the next successful login.
+func TestSuperuserPasswordPolicyAndHashUpgrade(t *testing.T) {
+	ctx := context.Background()
+	stores := superuser.Stores{
+		Superusers:    memstore.NewSuperuserStore(),
+		RefreshTokens: memstore.NewSuperuserRefreshTokenStore(),
+	}
+	const email, password = "ops@example.com", "correct-horse-battery"
+
+	old, err := superuser.NewService(stores, newSigner(t), superuser.Config{
+		PasswordHasher: authitcrypto.BcryptHasher{Cost: 4},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := old.Bootstrap(ctx, email, "short", "Ops"); !errors.Is(err, superuser.ErrWeakPassword) {
+		t.Fatalf("expected ErrWeakPassword, got %v", err)
+	}
+	su, err := old.Bootstrap(ctx, email, password, "Ops")
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	stored, err := stores.Superusers.GetSuperuserByID(ctx, su.ID)
+	if err != nil {
+		t.Fatalf("GetSuperuserByID: %v", err)
+	}
+	if !strings.HasPrefix(stored.PasswordHash, "$2") {
+		t.Fatalf("expected a bcrypt hash, got %q", stored.PasswordHash)
+	}
+
+	upgraded, err := superuser.NewService(stores, newSigner(t), superuser.Config{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := upgraded.Authenticate(ctx, email, password, "ua", "ip"); err != nil {
+		t.Fatalf("a bcrypt-hashed operator password must still authenticate: %v", err)
+	}
+	stored, err = stores.Superusers.GetSuperuserByID(ctx, su.ID)
+	if err != nil {
+		t.Fatalf("GetSuperuserByID: %v", err)
+	}
+	if !strings.HasPrefix(stored.PasswordHash, "$argon2id$") {
+		t.Fatalf("expected the hash to be upgraded to argon2id, got %q", stored.PasswordHash)
 	}
 }

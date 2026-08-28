@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/mind-vm/authit/audit"
+	authitcrypto "github.com/mind-vm/authit/crypto"
 )
 
 // EmailVerificationPolicy decides whether Authenticate refuses a login from
@@ -71,6 +72,20 @@ type Config struct {
 	// password/2FA changes, session revocation). Nil means events are not
 	// recorded — see package audit.
 	AuditLogger audit.Logger
+	// PasswordHasher hashes and verifies passwords. Nil means
+	// crypto.DefaultHasher() — Argon2id at OWASP's recommended minimum.
+	//
+	// Changing this does not invalidate existing passwords: every Hasher
+	// verifies any format authit has written, and Authenticate re-hashes a
+	// user's password on their next successful login once the configured
+	// hasher reports NeedsRehash. An application upgrading from a version
+	// that hardcoded bcrypt migrates its corpus by doing nothing.
+	PasswordHasher authitcrypto.Hasher
+	// PasswordValidator rejects unacceptable passwords on registration,
+	// change and reset. Nil means crypto.DefaultPasswordPolicy() (length
+	// only). It is never consulted on login, so tightening it does not lock
+	// out existing users; set it to a no-op func to disable it entirely.
+	PasswordValidator authitcrypto.PasswordValidator
 }
 
 func (c Config) withDefaults() Config {
@@ -100,6 +115,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.BackupCodeCount <= 0 {
 		c.BackupCodeCount = 10
+	}
+	if c.PasswordHasher == nil {
+		c.PasswordHasher = authitcrypto.DefaultHasher()
+	}
+	if c.PasswordValidator == nil {
+		c.PasswordValidator = authitcrypto.DefaultPasswordPolicy()
 	}
 	return c
 }

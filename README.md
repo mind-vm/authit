@@ -174,6 +174,33 @@ Three things `store/*.go` will not tell you, and the reason the reference exists
 - **Email delivery.** `user.EmailSender` is an interface; bring your own SMTP/API client.
 - **Social/OAuth login, RBAC policy engines.** Out of scope for now; `team.Role` and `store.Member.Role` are plain strings you can extend.
 
+## Passwords
+
+Passwords are hashed with **Argon2id** at OWASP's recommended minimum (19 MiB, 2 iterations, 1 lane) and encoded in the standard PHC string format, so the parameters travel with each hash.
+
+Both the algorithm and the policy are knobs:
+
+```go
+user.Config{
+	// Defaults to crypto.DefaultHasher() — Argon2id.
+	PasswordHasher: authitcrypto.Argon2idHasher{Memory: 64 * 1024, Time: 3},
+	// Defaults to crypto.DefaultPasswordPolicy() — length only, 12..1024.
+	PasswordValidator: authitcrypto.AllPolicies(
+		authitcrypto.LengthPolicy(14, 0),
+		authitcrypto.NotEmailPolicy(),
+	),
+}
+```
+
+Two properties are worth relying on:
+
+- **Changing the hasher never invalidates a password.** Every `Hasher` verifies any format authit has written, dispatching on the hash's own prefix, and `Authenticate` re-hashes on the next successful login once the configured hasher reports `NeedsRehash`. An application upgrading from a version that hardcoded bcrypt migrates its whole corpus by doing nothing. `crypto.BcryptHasher` remains available if you need to stay on bcrypt.
+- **The policy is never applied at login.** It runs on registration, change and reset only, so tightening it does not lock out the users it was raised to protect. `LengthPolicy` counts runes rather than bytes.
+
+The default policy enforces length and nothing else, deliberately: composition rules ("one uppercase, one digit") measurably reduce entropy by steering people toward predictable substitutions, and a breach-list check needs a corpus this library has no business shipping. A breached-password check is the highest-value thing to add via `AllPolicies`.
+
+Argon2id's memory cost is *per concurrent hash* — at the default, 100 simultaneous logins wants roughly 1.9 GiB. Raise `Memory` only alongside a limit on concurrent authentication.
+
 ## Brute-force protection
 
 Failed logins are counted per email address over `Config.FailedLoginWindow` (15 minutes by default). Once `Config.MaxFailedLoginAttempts` (5) is reached the address is in *temporary lockout* and `Authenticate` returns `ErrAccountLocked` until the recorded attempts age out. Nothing is stored and nothing has to unlock it.
@@ -189,7 +216,7 @@ Per-IP rate limiting is still yours: the lockout is account-scoped by design (so
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: passwords are hashed with bcrypt and the algorithm is not yet pluggable; there is no password-strength policy (`Register` accepts any non-empty string); email addresses are not normalised, so case handling depends on your store's collation; and `jwt` ships only an HMAC signer, so any service that validates a token can also mint one. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: email addresses are not normalised, so case handling depends on your store's collation; refresh-token rotation does not detect reuse of a revoked token; and `jwt` ships only an HMAC signer, so any service that validates a token can also mint one. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 

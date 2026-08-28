@@ -172,8 +172,8 @@ mutation, and that check — not the storage — is the part people get wrong.
 | **Migrations / schema CLI** | ✅ | ❌ (reference `schema.sql`) |
 | **Typed client SDK** | ✅ | ❌ (out of scope, correctly) |
 | **Access-control model** | ✅ | ❌ (by design) |
-| **Pluggable password hashing** | ✅ | ❌ (bcrypt, hardcoded) |
-| **Password policy** | ✅ | ❌ (none at all) |
+| **Pluggable password hashing** | ✅ (scrypt default) | ✅ (argon2id default) |
+| **Password policy** | ✅ (length) | ✅ (composable validators) |
 | Storage-port architecture | ❌ (adapters, but its schema) | ✅ |
 
 ### 2.7 Crypto and hardening posture
@@ -182,8 +182,8 @@ This is where the concrete defects are, and where the gap is not a design choice
 
 | | better-auth | authit |
 |---|---|---|
-| Password KDF | scrypt by default, `hash`/`verify` fully pluggable | bcrypt, `crypto.HashPassword` is a package function with no seam |
-| Password policy | configurable min/max length | **none** — `Register` accepts `"a"` |
+| Password KDF | scrypt by default, `hash`/`verify` fully pluggable | argon2id by default, `crypto.Hasher` pluggable *(was bcrypt, hardcoded)* |
+| Password policy | configurable min/max length | composable validators, length by default *(was none)* |
 | Email normalisation | handled | **none** — `Alice@x.com` and `alice@x.com` become two accounts, or collide, depending on your store's collation |
 | Rate limiting | built in, per-path rules | none |
 | Brute-force response | rate limit | account lock (see below) |
@@ -192,7 +192,8 @@ This is where the concrete defects are, and where the gap is not a design choice
 Six of these are worth calling out precisely, because they are bugs rather than missing features.
 They are listed worst-first.
 
-> **Status:** (a), (b), (c) and (f) are **fixed** — see T0.1–T0.3. They are described below in the
+> **Status:** (a), (b), (c) and (f) are **fixed** — see T0.1–T0.3 — as are the password KDF and
+> policy rows above, via T0.4/T0.5. They are described below in the
 > present tense as they were found, because the reasoning is what justifies the fix and the shape of
 > the defect is what the regression tests pin. (d) and (e) are still open.
 
@@ -355,21 +356,45 @@ rather than permanent, and is documented in the README.
 **T0.9 (partial) — §2.7(f) reconciled** as a side effect of T0.3; §2.7(e) (device-code rate limiting)
 still open and still depends on T1.4.
 
-**T0.4 — Make password hashing pluggable, and default to argon2id.**
-Introduce `crypto.Hasher { Hash(string) (string, error); Verify(password, hash string) bool; NeedsRehash(hash string) bool }`
-with `crypto.Bcrypt` and `crypto.Argon2id` implementations, and `user.Config.PasswordHasher` /
-`superuser.Config.PasswordHasher`. Because bcrypt hashes carry a `$2a$` prefix, a dispatching hasher
-migrates existing rows transparently: verify against the old algorithm, then rehash on successful
-login when `NeedsRehash` reports true. This is the one piece of better-auth's design worth copying
-verbatim — see §4.0.
-*Touches:* `crypto/password.go`, `user/config.go`, `user/register_login.go`, `superuser/service.go`.
+**T0.4 — Make password hashing pluggable, and default to argon2id.** ✅ *Done.* `crypto.Hasher`
+(`Hash`/`Verify`/`NeedsRehash`) with `crypto.Argon2idHasher` (the new default, OWASP minimum
+parameters, PHC string encoding so the parameters travel with each hash) and `crypto.BcryptHasher`.
+Both dispatch `Verify` on the hash's own prefix, so either accepts anything authit has ever written —
+without that property, changing the hasher would lock out every existing user. `Authenticate` on both
+planes re-hashes after a successful password check when `NeedsRehash` reports the stored hash is
+weaker than current settings, so an existing bcrypt corpus migrates itself with no migration script.
+Best-effort: the stored hash stays valid if the rewrite fails, so it can never fail a login.
+*Changed:* `crypto/hasher.go` (new), `user/config.go`, `user/register_login.go`, `user/password.go`,
+`superuser/service.go`, `superuser/auth.go`, `user/errors.go`, `superuser/errors.go`.
+*Tests:* `crypto/hasher_test.go` (round trip, cross-format verification, `NeedsRehash` thresholds,
+malformed input), `user/hashing_test.go` (`TestPasswordHashUpgradesOnLogin`,
+`TestUpgradeDoesNotHappenForCurrentHashes`), `superuser/superuser_test.go`.
 
-**T0.5 — Add a password policy seam.**
-`user.Config.PasswordValidator func(ctx context.Context, email, password string) error`, nil-safe
-like `AuditLogger`, with a non-nil default enforcing a minimum length (12 is the current OWASP
-floor). Ship `user.MinLengthValidator(n)` and leave breach-list checks to the host.
-*Touches:* `user/config.go`, `user/register_login.go` (Register), `user/password.go` (ChangePassword,
-ResetPassword).
+**T0.5 — Add a password policy seam.** ✅ *Done*, in `crypto` rather than `user` so both planes share
+one type: `crypto.PasswordValidator`, with `LengthPolicy`, `NotEmailPolicy` and `AllPolicies` as
+composable pieces and `DefaultPasswordPolicy()` (12–1024 runes) as the non-nil default. Enforced on
+`Register`, `ChangePassword`, `ResetPassword` and `createSuperuser`.
+
+Two decisions worth recording:
+
+- **The policy is not consulted on login.** Raising it must not lock out the users it was raised to
+  protect. Pinned by `TestPasswordPolicyIsNotAppliedOnLogin`.
+- **Length only, by default.** Composition rules reduce entropy by steering people toward predictable
+  substitutions, and a breach-list check needs a corpus authit should not ship. `AllPolicies` is the
+  seam for adding one.
+
+Length is counted in runes, not bytes, so a 12-character minimum does not silently demand 12 bytes of
+a script whose characters are three bytes each. The maximum exists because a password is
+attacker-controlled input to a deliberately expensive function.
+
+*Changed:* `crypto/policy.go` (new), `user/config.go`, `user/register_login.go`, `user/password.go`,
+`superuser/service.go`. *Tests:* `crypto/hasher_test.go`, `user/hashing_test.go`.
+
+> **Note for existing consumers:** T0.5 is the one change in this tier that can break a working
+> application at runtime rather than at compile time — any account whose password is under 12
+> characters can no longer change or reset it to the same value, and seeded/test fixtures with short
+> passwords will start failing at `Register`. Set `PasswordValidator` explicitly to keep the old
+> behaviour. The repo's own test fixtures were updated rather than the default weakened.
 
 **T0.6 — Normalise email on the way in.**
 Lowercase and trim in `Register`, `Authenticate`, `RequestPasswordReset`,

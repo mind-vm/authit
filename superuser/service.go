@@ -41,6 +41,15 @@ type Config struct {
 	// deactivation, impersonation). Nil means events are not recorded —
 	// see package audit.
 	AuditLogger audit.Logger
+	// PasswordHasher hashes and verifies operator passwords. Nil means
+	// crypto.DefaultHasher() — Argon2id. Existing hashes in any format
+	// authit has written keep verifying, and are upgraded on next login.
+	PasswordHasher authitcrypto.Hasher
+	// PasswordValidator rejects unacceptable passwords when an operator
+	// account is created. Nil means crypto.DefaultPasswordPolicy().
+	// Consider a stricter policy here than on the user plane: these
+	// accounts can impersonate.
+	PasswordValidator authitcrypto.PasswordValidator
 }
 
 func (c Config) withDefaults() Config {
@@ -61,6 +70,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.FailedLoginWindow <= 0 {
 		c.FailedLoginWindow = 15 * time.Minute
+	}
+	if c.PasswordHasher == nil {
+		c.PasswordHasher = authitcrypto.DefaultHasher()
+	}
+	if c.PasswordValidator == nil {
+		c.PasswordValidator = authitcrypto.DefaultPasswordPolicy()
 	}
 	return c
 }
@@ -122,7 +137,10 @@ func (s *Service) CreateSuperuser(ctx context.Context, email, password, displayN
 }
 
 func (s *Service) createSuperuser(ctx context.Context, email, password, displayName string, createdBy *string) (store.Superuser, error) {
-	hash, err := authitcrypto.HashPassword(password)
+	if err := s.cfg.PasswordValidator(ctx, email, password); err != nil {
+		return store.Superuser{}, err
+	}
+	hash, err := s.cfg.PasswordHasher.Hash(password)
 	if err != nil {
 		return store.Superuser{}, err
 	}

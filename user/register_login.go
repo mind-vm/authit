@@ -13,13 +13,16 @@ import (
 // Register creates a new user with the given email/password. The password
 // is hashed before storage; the plaintext never leaves this call.
 func (s *Service) Register(ctx context.Context, email, password string) (store.User, error) {
+	if err := s.cfg.PasswordValidator(ctx, email, password); err != nil {
+		return store.User{}, err
+	}
 	if _, err := s.stores.Users.GetUserByEmail(ctx, email); err == nil {
 		return store.User{}, ErrEmailTaken
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return store.User{}, err
 	}
 
-	hash, err := authitcrypto.HashPassword(password)
+	hash, err := s.cfg.PasswordHasher.Hash(password)
 	if err != nil {
 		return store.User{}, err
 	}
@@ -70,7 +73,7 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		})
 		return AuthResult{}, ErrAccountLocked
 	}
-	if u == nil || !authitcrypto.CheckPassword(password, u.PasswordHash) {
+	if u == nil || !s.cfg.PasswordHasher.Verify(password, u.PasswordHash) {
 		s.recordFailedLogin(ctx, email, ipAddress)
 		actorID := ""
 		if u != nil {
@@ -82,6 +85,12 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		})
 		return AuthResult{}, ErrInvalidCredentials
 	}
+	// The password is correct, so this is the one moment the plaintext is
+	// available to upgrade a hash written by an older or weaker algorithm.
+	// Done before the email-verification and 2FA gates deliberately: those
+	// can reject the login, but the password itself was still proven.
+	s.rehashIfNeeded(ctx, u, password)
+
 	if s.cfg.EmailVerification == EmailVerificationRequired && !u.EmailVerified {
 		s.audit.Log(ctx, audit.Event{
 			Type: audit.EventUserLoginFailed, Result: audit.ResultDenied,
@@ -182,6 +191,23 @@ func (s *Service) recordFailedLogin(ctx context.Context, email, ipAddress string
 	_ = s.stores.Lockouts.RecordFailedLoginAttempt(ctx, &store.FailedLoginAttempt{
 		ID: id, Email: email, IPAddress: ipAddress, CreatedAt: time.Now(),
 	})
+}
+
+// rehashIfNeeded re-hashes u's password with the configured hasher when the
+// stored hash is weaker than current settings, so a corpus migrates itself
+// as users log in. Best-effort: a failure here must never fail a login that
+// has otherwise succeeded, since the stored hash remains valid either way.
+func (s *Service) rehashIfNeeded(ctx context.Context, u *store.User, password string) {
+	if !s.cfg.PasswordHasher.NeedsRehash(u.PasswordHash) {
+		return
+	}
+	hash, err := s.cfg.PasswordHasher.Hash(password)
+	if err != nil {
+		return
+	}
+	u.PasswordHash = hash
+	u.UpdatedAt = time.Now()
+	_ = s.stores.Users.UpdateUser(ctx, u)
 }
 
 // Refresh exchanges a valid, unrevoked refresh token for a new token pair,

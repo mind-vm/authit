@@ -84,9 +84,9 @@ func enrollTOTP(t *testing.T, f lockoutFixture, email, password string) (uid, se
 func TestTwoFactorGuessesAreRateLimited(t *testing.T) {
 	f := newLockoutFixture(t, user.Config{MaxFailedLoginAttempts: 3, FailedLoginWindow: time.Minute})
 	ctx := context.Background()
-	_, _ = enrollTOTP(t, f, "erin@example.com", "correct-pw")
+	_, _ = enrollTOTP(t, f, "erin@example.com", "correct-horse-battery")
 
-	result, err := f.svc.Authenticate(ctx, "erin@example.com", "correct-pw", "ua", "ip")
+	result, err := f.svc.Authenticate(ctx, "erin@example.com", "correct-horse-battery", "ua", "ip")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -115,10 +115,10 @@ func TestTwoFactorGuessesAreRateLimited(t *testing.T) {
 func TestTwoFactorThrottleSurvivesReauthentication(t *testing.T) {
 	f := newLockoutFixture(t, user.Config{MaxFailedLoginAttempts: 3, FailedLoginWindow: time.Minute})
 	ctx := context.Background()
-	enrollTOTP(t, f, "frank@example.com", "correct-pw")
+	enrollTOTP(t, f, "frank@example.com", "correct-horse-battery")
 
 	for i := 0; i < 3; i++ {
-		result, err := f.svc.Authenticate(ctx, "frank@example.com", "correct-pw", "ua", "ip")
+		result, err := f.svc.Authenticate(ctx, "frank@example.com", "correct-horse-battery", "ua", "ip")
 		if err != nil {
 			t.Fatalf("Authenticate %d: %v", i+1, err)
 		}
@@ -128,7 +128,7 @@ func TestTwoFactorThrottleSurvivesReauthentication(t *testing.T) {
 	}
 
 	// A correct password must no longer even yield a pending session.
-	if _, err := f.svc.Authenticate(ctx, "frank@example.com", "correct-pw", "ua", "ip"); !errors.Is(err, user.ErrAccountLocked) {
+	if _, err := f.svc.Authenticate(ctx, "frank@example.com", "correct-horse-battery", "ua", "ip"); !errors.Is(err, user.ErrAccountLocked) {
 		t.Fatalf("expected ErrAccountLocked, got %v", err)
 	}
 
@@ -140,9 +140,9 @@ func TestTwoFactorThrottleSurvivesReauthentication(t *testing.T) {
 func TestSuccessfulTwoFactorLoginResetsCounter(t *testing.T) {
 	f := newLockoutFixture(t, user.Config{MaxFailedLoginAttempts: 3, FailedLoginWindow: time.Minute})
 	ctx := context.Background()
-	_, secret := enrollTOTP(t, f, "heidi@example.com", "correct-pw")
+	_, secret := enrollTOTP(t, f, "heidi@example.com", "correct-horse-battery")
 
-	result, err := f.svc.Authenticate(ctx, "heidi@example.com", "correct-pw", "ua", "ip")
+	result, err := f.svc.Authenticate(ctx, "heidi@example.com", "correct-horse-battery", "ua", "ip")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestSuccessfulTwoFactorLoginResetsCounter(t *testing.T) {
 
 	// The counter is now clear: three fresh failures should be needed to
 	// throttle again, so two must not be enough.
-	next, err := f.svc.Authenticate(ctx, "heidi@example.com", "correct-pw", "ua", "ip")
+	next, err := f.svc.Authenticate(ctx, "heidi@example.com", "correct-horse-battery", "ua", "ip")
 	if err != nil {
 		t.Fatalf("Authenticate after success: %v", err)
 	}
@@ -179,10 +179,10 @@ func TestSuccessfulTwoFactorLoginResetsCounter(t *testing.T) {
 func TestFailedLoginsDoNotWriteAdministrativeLock(t *testing.T) {
 	f := newLockoutFixture(t, user.Config{MaxFailedLoginAttempts: 3, FailedLoginWindow: time.Minute})
 	ctx := context.Background()
-	uid := registerCaptured(t, f.svc, f.emailer, "ivan@example.com", "correct-pw")
+	uid := registerCaptured(t, f.svc, f.emailer, "ivan@example.com", "correct-horse-battery")
 
 	for i := 0; i < 5; i++ {
-		if _, err := f.svc.Authenticate(ctx, "ivan@example.com", "wrong-pw", "ua", "attacker-ip"); err == nil {
+		if _, err := f.svc.Authenticate(ctx, "ivan@example.com", "wrong-horse-battery", "ua", "attacker-ip"); err == nil {
 			t.Fatal("expected failure")
 		}
 	}
@@ -194,7 +194,7 @@ func TestFailedLoginsDoNotWriteAdministrativeLock(t *testing.T) {
 		t.Fatal("failed logins must not write an administrative lock: that is what made the DoS permanent")
 	}
 	// Throttled, but only via the derived path.
-	if _, err := f.svc.Authenticate(ctx, "ivan@example.com", "correct-pw", "ua", "ip"); !errors.Is(err, user.ErrAccountLocked) {
+	if _, err := f.svc.Authenticate(ctx, "ivan@example.com", "correct-horse-battery", "ua", "ip"); !errors.Is(err, user.ErrAccountLocked) {
 		t.Fatalf("expected ErrAccountLocked while throttled, got %v", err)
 	}
 }
@@ -228,18 +228,18 @@ func TestThrottleLiftsWithoutOperatorAction(t *testing.T) {
 func TestAdministrativeLockStillBlocksLogin(t *testing.T) {
 	f := newLockoutFixture(t, user.Config{MaxFailedLoginAttempts: 3, FailedLoginWindow: time.Minute})
 	ctx := context.Background()
-	uid := registerCaptured(t, f.svc, f.emailer, "judy@example.com", "correct-pw")
+	uid := registerCaptured(t, f.svc, f.emailer, "judy@example.com", "correct-horse-battery")
 
 	if err := f.lockouts.LockAccount(ctx, uid); err != nil {
 		t.Fatalf("LockAccount: %v", err)
 	}
-	if _, err := f.svc.Authenticate(ctx, "judy@example.com", "correct-pw", "ua", "ip"); !errors.Is(err, user.ErrAccountLocked) {
+	if _, err := f.svc.Authenticate(ctx, "judy@example.com", "correct-horse-battery", "ua", "ip"); !errors.Is(err, user.ErrAccountLocked) {
 		t.Fatalf("expected ErrAccountLocked, got %v", err)
 	}
 	if err := f.lockouts.UnlockAccount(ctx, uid); err != nil {
 		t.Fatalf("UnlockAccount: %v", err)
 	}
-	if _, err := f.svc.Authenticate(ctx, "judy@example.com", "correct-pw", "ua", "ip"); err != nil {
+	if _, err := f.svc.Authenticate(ctx, "judy@example.com", "correct-horse-battery", "ua", "ip"); err != nil {
 		t.Fatalf("expected login to succeed after unlock, got %v", err)
 	}
 }

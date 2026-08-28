@@ -126,7 +126,10 @@ func TestRegisterLoginRefreshLogout(t *testing.T) {
 	if _, err := svc.Register(ctx, "alice@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if _, err := svc.Register(ctx, "alice@example.com", "other"); !errors.Is(err, user.ErrEmailTaken) {
+	// A policy-valid password, so this exercises ErrEmailTaken rather than
+	// tripping the validator: Register checks the password before the
+	// address, so a weak one would mask the duplicate.
+	if _, err := svc.Register(ctx, "alice@example.com", "another-valid-passphrase"); !errors.Is(err, user.ErrEmailTaken) {
 		t.Fatalf("expected ErrEmailTaken, got %v", err)
 	}
 
@@ -136,9 +139,9 @@ func TestRegisterLoginRefreshLogout(t *testing.T) {
 	}
 
 	svc2, emailer := serviceWithCapturingEmailer(t)
-	uid := registerCaptured(t, svc2, emailer, "bob@example.com", "hunter2xx")
+	uid := registerCaptured(t, svc2, emailer, "bob@example.com", "hunter2xx-passphrase")
 
-	result, err := svc2.Authenticate(context.Background(), "bob@example.com", "hunter2xx", "ua", "1.2.3.4")
+	result, err := svc2.Authenticate(context.Background(), "bob@example.com", "hunter2xx-passphrase", "ua", "1.2.3.4")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -175,15 +178,15 @@ func TestRegisterLoginRefreshLogout(t *testing.T) {
 
 func TestAccountLockout(t *testing.T) {
 	svc, emailer := serviceWithCapturingEmailer(t)
-	registerCaptured(t, svc, emailer, "carol@example.com", "correct-pw")
+	registerCaptured(t, svc, emailer, "carol@example.com", "correct-horse-battery")
 	ctx := context.Background()
 
 	for range 3 {
-		if _, err := svc.Authenticate(ctx, "carol@example.com", "wrong-pw", "ua", "ip"); !errors.Is(err, user.ErrInvalidCredentials) {
+		if _, err := svc.Authenticate(ctx, "carol@example.com", "wrong-horse-battery", "ua", "ip"); !errors.Is(err, user.ErrInvalidCredentials) {
 			t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 		}
 	}
-	if _, err := svc.Authenticate(ctx, "carol@example.com", "correct-pw", "ua", "ip"); !errors.Is(err, user.ErrAccountLocked) {
+	if _, err := svc.Authenticate(ctx, "carol@example.com", "correct-horse-battery", "ua", "ip"); !errors.Is(err, user.ErrAccountLocked) {
 		t.Fatalf("expected ErrAccountLocked after threshold, got %v", err)
 	}
 }
@@ -216,7 +219,7 @@ func TestPasswordResetFlow(t *testing.T) {
 		t.Fatalf("Authenticate: %v", err)
 	}
 
-	if err := svc.ResetPassword(ctx, rawToken, "new-password"); err != nil {
+	if err := svc.ResetPassword(ctx, rawToken, "new-correct-horse-battery"); err != nil {
 		t.Fatalf("ResetPassword: %v", err)
 	}
 
@@ -229,7 +232,7 @@ func TestPasswordResetFlow(t *testing.T) {
 	if _, err := svc.Authenticate(ctx, "dave@example.com", "old-password", "ua", "ip"); !errors.Is(err, user.ErrInvalidCredentials) {
 		t.Fatalf("expected old password to be rejected, got %v", err)
 	}
-	if _, err := svc.Authenticate(ctx, "dave@example.com", "new-password", "ua", "ip"); err != nil {
+	if _, err := svc.Authenticate(ctx, "dave@example.com", "new-correct-horse-battery", "ua", "ip"); err != nil {
 		t.Fatalf("expected new password to work, got %v", err)
 	}
 
@@ -241,7 +244,7 @@ func TestPasswordResetFlow(t *testing.T) {
 
 func TestTwoFactorLoginFlow(t *testing.T) {
 	svc, emailer := serviceWithCapturingEmailer(t)
-	uid := registerCaptured(t, svc, emailer, "erin@example.com", "correct-pw")
+	uid := registerCaptured(t, svc, emailer, "erin@example.com", "correct-horse-battery")
 	ctx := context.Background()
 
 	setup, err := svc.BeginTwoFactorSetup(ctx, uid, "erin@example.com")
@@ -260,7 +263,7 @@ func TestTwoFactorLoginFlow(t *testing.T) {
 		t.Fatal("expected backup codes")
 	}
 
-	result, err := svc.Authenticate(ctx, "erin@example.com", "correct-pw", "ua", "ip")
+	result, err := svc.Authenticate(ctx, "erin@example.com", "correct-horse-battery", "ua", "ip")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -292,7 +295,7 @@ func TestTwoFactorLoginFlow(t *testing.T) {
 	}
 
 	// Backup code should also work and should be single-use.
-	result2, err := svc.Authenticate(ctx, "erin@example.com", "correct-pw", "ua", "ip")
+	result2, err := svc.Authenticate(ctx, "erin@example.com", "correct-horse-battery", "ua", "ip")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -311,14 +314,14 @@ func TestTwoFactorLoginFlow(t *testing.T) {
 
 func TestSessions(t *testing.T) {
 	svc, emailer := serviceWithCapturingEmailer(t)
-	registerCaptured(t, svc, emailer, "frank@example.com", "correct-pw")
+	registerCaptured(t, svc, emailer, "frank@example.com", "correct-horse-battery")
 	ctx := context.Background()
 
-	a, err := svc.Authenticate(ctx, "frank@example.com", "correct-pw", "device-a", "ip-a")
+	a, err := svc.Authenticate(ctx, "frank@example.com", "correct-horse-battery", "device-a", "ip-a")
 	if err != nil {
 		t.Fatalf("Authenticate a: %v", err)
 	}
-	_, err = svc.Authenticate(ctx, "frank@example.com", "correct-pw", "device-b", "ip-b")
+	_, err = svc.Authenticate(ctx, "frank@example.com", "correct-horse-battery", "device-b", "ip-b")
 	if err != nil {
 		t.Fatalf("Authenticate b: %v", err)
 	}

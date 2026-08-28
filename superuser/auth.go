@@ -53,7 +53,7 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 			return TokenPair{}, ErrAccountLocked
 		}
 	}
-	if !authitcrypto.CheckPassword(password, su.PasswordHash) {
+	if !s.cfg.PasswordHasher.Verify(password, su.PasswordHash) {
 		s.recordFailedLogin(ctx, email)
 		s.audit.Log(ctx, audit.Event{
 			Type: audit.EventSuperuserLoginFailed, Result: audit.ResultFailure,
@@ -61,6 +61,17 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		})
 		return TokenPair{}, ErrInvalidCredentials
 	}
+	// Correct password: the one point the plaintext is available to upgrade
+	// a hash written by an older algorithm. Best-effort -- the stored hash
+	// stays valid if this fails, so it must never fail the login.
+	if s.cfg.PasswordHasher.NeedsRehash(su.PasswordHash) {
+		if hash, err := s.cfg.PasswordHasher.Hash(password); err == nil {
+			su.PasswordHash = hash
+			su.UpdatedAt = time.Now()
+			_ = s.stores.Superusers.UpdateSuperuser(ctx, su)
+		}
+	}
+
 	if !su.IsActive {
 		s.audit.Log(ctx, audit.Event{
 			Type: audit.EventSuperuserLoginFailed, Result: audit.ResultDenied,

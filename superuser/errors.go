@@ -1,6 +1,15 @@
 package superuser
 
-import "errors"
+import (
+	"errors"
+
+	authitcrypto "github.com/mind-vm/authit/crypto"
+)
+
+// ErrWeakPassword is returned by Bootstrap and CreateSuperuser when
+// Config.PasswordValidator rejects the password. Alias for
+// crypto.ErrWeakPassword so errors.Is matches either.
+var ErrWeakPassword = authitcrypto.ErrWeakPassword
 
 var (
 	ErrInvalidCredentials   = errors.New("authit/superuser: invalid credentials")

@@ -17,10 +17,13 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	if err != nil {
 		return err
 	}
-	if !authitcrypto.CheckPassword(currentPassword, u.PasswordHash) {
+	if !s.cfg.PasswordHasher.Verify(currentPassword, u.PasswordHash) {
 		return ErrInvalidCredentials
 	}
-	hash, err := authitcrypto.HashPassword(newPassword)
+	if err := s.cfg.PasswordValidator(ctx, u.Email, newPassword); err != nil {
+		return err
+	}
+	hash, err := s.cfg.PasswordHasher.Hash(newPassword)
 	if err != nil {
 		return err
 	}
@@ -101,7 +104,10 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword strin
 	if err != nil {
 		return err
 	}
-	hash, err := authitcrypto.HashPassword(newPassword)
+	if err := s.cfg.PasswordValidator(ctx, u.Email, newPassword); err != nil {
+		return err
+	}
+	hash, err := s.cfg.PasswordHasher.Hash(newPassword)
 	if err != nil {
 		return err
 	}
