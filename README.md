@@ -163,6 +163,9 @@ If you'd rather not hand-write the request/response plumbing, [`authhandlers`](a
 | `NewSuperuserHandler` | operator login, operator accounts, impersonation |
 | `NewPATHandler` | the caller's own personal access tokens |
 | `NewDeviceHandler` | the RFC 8628 device authorization grant |
+| `NewOIDCHandler` | sign-in with an external identity provider |
+| `NewPasskeyHandler` | WebAuthn registration, login and management |
+| `NewEmailLoginHandler` | magic links and sign-in codes |
 
 ```go
 mux := http.NewServeMux()
@@ -174,6 +177,12 @@ mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewTeamHandler(teamSvc
 They are separate handlers rather than one tree because they don't belong in the same place: the superuser group is an operator surface most deployments should keep off the public internet, and the device group speaks OAuth wire format (form-encoded requests, RFC 6749 error bodies) rather than this package's own JSON conventions.
 
 Protected routes validate the caller's bearer token themselves against the `jwt.Verifier` you pass in — no host middleware or context key required. CORS, rate limiting, and request logging are still yours.
+
+The `oidc` and `passkey` groups keep in-flight ceremony state in a short-lived `HttpOnly` cookie. The `SameSite` setting differs between them and the difference is load-bearing: the OAuth cookie is **Lax**, because the callback is a top-level navigation *from the provider* and a `Strict` cookie would not be sent with it, leaving the callback unable to find the state it must check. The WebAuthn cookies are **Strict**, because that ceremony is driven by XHR from your own page and nothing is lost.
+
+Note that importing this module now pulls in `golang.org/x/oauth2` and `go-webauthn/webauthn` — a real cost to your module graph, though not to your binary, since Go links only reachable code.
+
+**Four constructors need a `SessionIssuer`.** `oidc`, `passkey`, `emaillogin` and `device` all resolve *who* someone is without minting a credential — deliberately, since what a signed-in user should receive is your decision. The issuer writes the response itself, because these flows disagree about what a response is: a passkey assertion is an XHR wanting JSON, an OAuth callback is a top-level navigation wanting a redirect and a `Set-Cookie`.
 
 **Two constructors demand an argument authit cannot supply, and panic without it.**
 
@@ -510,7 +519,7 @@ Leaving the field nil disables the control rather than breaking, the same shape 
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does); and `oidc`, `passkey` and `emaillogin` ship no HTTP route groups, so those handlers are yours. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does); and linking a provider to an already-authenticated user has no route group — it is a differently shaped ceremony that must carry the caller's identity through it, and getting that wrong is an account takeover. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 

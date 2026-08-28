@@ -2,12 +2,15 @@
 // wired over the same services a host would otherwise call directly. One
 // constructor per plane, each returning a plain http.Handler:
 //
-//	NewUserHandler       register, login, refresh, logout, password reset,
-//	                     email verification, 2FA, session management
-//	NewTeamHandler       teams, membership, roles, invitations
-//	NewSuperuserHandler  operator login and account management, impersonation
-//	NewPATHandler        the caller's own personal access tokens
-//	NewDeviceHandler     the RFC 8628 device authorization grant
+//	NewUserHandler        register, login, refresh, logout, password reset,
+//	                      email verification, 2FA, session management
+//	NewTeamHandler        teams, membership, roles, invitations
+//	NewSuperuserHandler   operator login and account management, impersonation
+//	NewPATHandler         the caller's own personal access tokens
+//	NewDeviceHandler      the RFC 8628 device authorization grant
+//	NewOIDCHandler        sign-in with an external identity provider
+//	NewPasskeyHandler     WebAuthn registration, login and management
+//	NewEmailLoginHandler  magic links and sign-in codes
 //
 // It depends on nothing beyond net/http and authit itself — no router, no
 // OpenAPI generator, no framework of any kind. NewUserHandler returns a
@@ -18,8 +21,21 @@
 //	mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(svc, signer)))
 //
 // It is a separate module (its own go.mod) so that importing authit's core
-// never pulls this in, and importing this never pulls anything beyond
-// authit's core in turn — the same shape as sqlbstore.
+// never pulls this in — the same shape as sqlbstore.
+//
+// # Dependencies
+//
+// This package used to depend on nothing beyond net/http and authit's core.
+// It no longer can: the oidc and passkey groups exist to serve those
+// packages, so importing this module now also brings in golang.org/x/oauth2
+// and go-webauthn/webauthn with its own tree.
+//
+// That is a real cost to the module graph and to `go mod download`, and it
+// is worth knowing about. It is not a cost to your binary: Go links only
+// reachable code, so a host that never calls NewPasskeyHandler ships none
+// of the WebAuthn implementation. If the download size matters to you
+// anyway, call the service packages directly and write the eight routes
+// yourself — everything here is a thin translation of them.
 //
 // # Mount them separately
 //
@@ -80,7 +96,18 @@ type UserHandler struct {
 type Option func(*options)
 
 type options struct {
-	ip func(*http.Request) string
+	ip       func(*http.Request) string
+	insecure bool
+}
+
+// WithInsecureCookies drops the Secure attribute from the short-lived
+// ceremony cookies the oidc, passkey and emaillogin groups set.
+//
+// Spelled this way round so the unsafe choice is the one you type. It
+// exists for local development against http://localhost and has no other
+// legitimate use.
+func WithInsecureCookies() Option {
+	return func(o *options) { o.insecure = true }
 }
 
 // WithIPExtractor overrides how the client IP recorded on login/refresh is

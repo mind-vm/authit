@@ -812,6 +812,45 @@ was written, so it compiles and skips. `memstore`'s half runs on every `go test 
 
 ### Tier 2 — feature scope, in the order that pays
 
+**T2.6 — HTTP route groups for the feature packages.** ✅ *Done* (not in the original plan; added
+because `oidc`, `passkey` and `emaillogin` all stopped at the service layer, which is the difference
+between "authit has passkeys" and "you can ship passkeys with authit"). `NewOIDCHandler`,
+`NewPasskeyHandler` and `NewEmailLoginHandler`.
+
+All three resolve an identity without minting a credential, so all three take a required
+`SessionIssuer` — the same shape `NewDeviceHandler` already used. It *writes the response* rather
+than returning a body, because these flows disagree about what a response is: a passkey assertion is
+an XHR wanting JSON, an OAuth callback is a top-level navigation wanting a redirect and a
+`Set-Cookie`. One signature covers both only if it owns the `ResponseWriter`.
+
+**The `SameSite` difference between the two ceremony cookies is load-bearing**, and wrong in opposite
+directions. The OAuth cookie must be **Lax**: the callback is a top-level navigation *from the
+provider's origin*, so a `Strict` cookie is not sent with it and the callback can never find the state
+it is supposed to check — the flow simply stops working. The WebAuthn cookies are **Strict**, since
+that ceremony is driven by XHR from the site's own page and nothing is lost. Both are pinned by tests
+that fail when the setting is flipped.
+
+Two things deliberately absent:
+
+- **No route for linking a provider to an already-authenticated user.** It is a second, differently
+  shaped ceremony that has to carry the caller's identity through the redirect, and completing a link
+  against whoever the callback happens to arrive as is an account takeover. Approximating it here
+  would have been worse than leaving it out.
+- **No known-user passkey ceremony.** A passkey as a *second* factor runs against a caller who has
+  passed the first factor and is not yet authenticated — the state `user.Authenticate` hands back as a
+  pending two-factor token. Only the host holds that, so only the host can wire it.
+
+*A promise this broke, stated rather than quietly dropped:* `authhandlers`'s package doc said it
+"depends on nothing beyond net/http and authit itself". Serving `oidc` and `passkey` means importing
+`golang.org/x/oauth2` and `go-webauthn/webauthn` with its tree. The doc now says so, and says the cost
+is to the module graph rather than to the binary — Go links only reachable code, so a host that never
+calls `NewPasskeyHandler` ships none of it.
+
+*Changed:* `authhandlers/{issue,oidc,passkey,emaillogin}.go` (new), `authhandlers/authhandlers.go`.
+*Tests:* `authhandlers/featuregroups_test.go`.
+
+
+
 **T2.1 — Social / OIDC login.** ✅ *Done.* New `oidc` package, new `store.AccountStore` port,
 `golang.org/x/oauth2` for the handshake. Core `user` stays password-only, exactly as this document
 proposed; linking is an explicit call.
