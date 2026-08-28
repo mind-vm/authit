@@ -28,7 +28,7 @@
 // handler's own subtree are the host's job — this package assumes it is
 // mounted behind whatever the host already has. Protected routes (session
 // management, password change, 2FA management) authenticate the caller by
-// validating the request's bearer token with the same authitjwt.Signer the
+// validating the request's bearer token with the same key material the
 // host's user.Service uses (via authithttp.Validate) and using
 // claims.Subject as the user id; there is no cookie or CSRF handling.
 package authhandlers
@@ -44,9 +44,9 @@ import (
 
 // UserHandler serves authit's user-plane routes.
 type UserHandler struct {
-	svc    *user.Service
-	signer authitjwt.Signer
-	ip     func(*http.Request) string
+	svc      *user.Service
+	verifier authitjwt.Verifier
+	ip       func(*http.Request) string
 }
 
 // Option configures NewUserHandler.
@@ -73,8 +73,8 @@ func defaultIPExtractor(r *http.Request) string {
 }
 
 // NewUserHandler builds the user-plane route group. svc is a *user.Service
-// the host has already constructed; signer must be the same
-// authitjwt.Signer svc was given, since protected routes validate bearer
+// the host has already constructed; verifier must verify the same tokens
+// svc issues, since protected routes validate bearer
 // tokens against it directly.
 //
 // Public routes (no Authorization header required):
@@ -101,12 +101,12 @@ func defaultIPExtractor(r *http.Request) string {
 //	POST   /me/two-factor/disable
 //	POST   /me/two-factor/backup-codes/regenerate
 //	GET    /me/two-factor
-func NewUserHandler(svc *user.Service, signer authitjwt.Signer, opts ...Option) http.Handler {
+func NewUserHandler(svc *user.Service, verifier authitjwt.Verifier, opts ...Option) http.Handler {
 	o := options{ip: defaultIPExtractor}
 	for _, opt := range opts {
 		opt(&o)
 	}
-	h := &UserHandler{svc: svc, signer: signer, ip: o.ip}
+	h := &UserHandler{svc: svc, verifier: verifier, ip: o.ip}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /register", h.register)
@@ -139,7 +139,7 @@ type authedHandlerFunc func(w http.ResponseWriter, r *http.Request, claims authi
 
 func (h *UserHandler) withAuth(next authedHandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims, err := authithttp.Validate(h.signer, r)
+		claims, err := authithttp.Validate(h.verifier, r)
 		if err != nil {
 			writeError(w, authithttp.StatusFor(err), "unauthorized", err.Error())
 			return

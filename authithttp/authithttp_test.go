@@ -1,6 +1,9 @@
 package authithttp_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -235,5 +238,78 @@ func TestValidateAcceptsImpersonationTokensForTheHostToJudge(t *testing.T) {
 func TestValidateNilSigner(t *testing.T) {
 	if _, err := authithttp.Validate(nil, requestWithAuth("Bearer abc")); err == nil {
 		t.Fatal("expected an error for a nil signer")
+	}
+}
+
+// TestAlgorithmConfusionIsA401 pins the classification: an HS256 token
+// signed with an RSA public key is an attack, not an outage, so it must
+// cost the attacker a 401 rather than costing the operator a 500 and a
+// page. StatusFor gets this right because the error blames the token.
+func TestAlgorithmConfusionIsA401(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	signer, err := authitjwt.NewRS256Signer(priv, authitjwt.Defaults{Issuer: "authit-test", TTL: time.Minute})
+	if err != nil {
+		t.Fatalf("NewRS256Signer: %v", err)
+	}
+
+	forged := jwtlib.NewWithClaims(jwtlib.SigningMethodHS256, &authitjwt.Claims{
+		RegisteredClaims: jwtlib.RegisteredClaims{
+			Subject:   "attacker",
+			Issuer:    "authit-test",
+			ExpiresAt: jwtlib.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	})
+	forged.Header["kid"] = signer.KeyID()
+	token, err := forged.SignedString(priv.PublicKey.N.Bytes())
+	if err != nil {
+		t.Fatalf("signing the forgery: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+
+	// The verify-only half is what a downstream service would hold.
+	if _, err := authithttp.Validate(signer.Verifier(), r); err == nil {
+		t.Fatal("the forged token must be rejected")
+	} else if got := authithttp.StatusFor(err); got != http.StatusUnauthorized {
+		t.Fatalf("alg confusion should be %d (the token's fault), got %d",
+			http.StatusUnauthorized, got)
+	}
+}
+
+// TestVerifierSatisfiesValidate: the point of narrowing Validate to
+// Verifier is that a service can be given something that cannot mint.
+func TestVerifierSatisfiesValidate(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	signer, err := authitjwt.NewEd25519Signer(priv, authitjwt.Defaults{Issuer: "authit-test", TTL: time.Minute})
+	if err != nil {
+		t.Fatalf("NewEd25519Signer: %v", err)
+	}
+	token, err := signer.Generate(authitjwt.Claims{
+		RegisteredClaims: jwtlib.RegisteredClaims{Subject: "user-1"},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// A second service holds only the public key.
+	remote, err := authitjwt.NewVerifier(signer.PublicKey())
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	claims, err := authithttp.Validate(remote, r)
+	if err != nil {
+		t.Fatalf("Validate with a public-key verifier: %v", err)
+	}
+	if claims.Subject != "user-1" {
+		t.Fatalf("unexpected subject %q", claims.Subject)
 	}
 }

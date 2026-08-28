@@ -19,15 +19,35 @@ type Defaults struct {
 	TTL    time.Duration
 }
 
-// Signer signs and verifies JWTs. The generic Sign/Verify methods work with
+// Verifier checks that a token is genuine and unexpired. It cannot mint
+// one, and that is the whole point of it existing separately from Signer.
+//
+// With HMACSigner, verifying and signing need the same secret, so any
+// service that can check a token can also forge one — including an
+// impersonation token, since Claims.ActorID is an ordinary field. Inside a
+// single binary that is fine. Across two, it is not: the second service
+// should hold a Verifier built from a public key (see NewVerifier), which
+// is structurally incapable of issuing anything.
+//
+// Take a Verifier, not a Signer, in any function that only needs to check a
+// token — authithttp.Validate does. A Signer satisfies Verifier, so
+// narrowing a parameter this way never breaks a caller.
+type Verifier interface {
+	// Verify parses and validates token into dst, which must be a pointer
+	// to a jwt.Claims-satisfying type.
+	Verify(token string, dst jwt.Claims) error
+	// Validate verifies token as the default Claims type.
+	Validate(token string) (Claims, error)
+}
+
+// Signer mints and verifies JWTs. The generic Sign/Verify methods work with
 // any jwt.Claims-satisfying type, so a host application can define its own
 // claims struct (e.g. embedding a team ID) without authit needing to know
 // about it. Generate/Validate are a convenience pair fixed to Claims.
 type Signer interface {
+	Verifier
 	Sign(claims jwt.Claims) (string, error)
-	Verify(token string, dst jwt.Claims) error
 	Generate(claims Claims) (string, error)
-	Validate(token string) (Claims, error)
 	Defaults() Defaults
 }
 
@@ -74,18 +94,24 @@ func (s *HMACSigner) Verify(token string, dst jwt.Claims) error {
 	return nil
 }
 
-// Generate signs claims after applying issuer/TTL defaults for any zero
-// fields.
-func (s *HMACSigner) Generate(claims Claims) (string, error) {
+// applyDefaults fills issuer and the timestamps for any zero fields, so
+// every Signer implementation treats Defaults identically.
+func applyDefaults(claims *Claims, d Defaults) {
 	if claims.Issuer == "" {
-		claims.Issuer = s.defaults.Issuer
+		claims.Issuer = d.Issuer
 	}
 	if claims.ExpiresAt == nil {
-		claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(s.defaults.TTL))
+		claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(d.TTL))
 	}
 	if claims.IssuedAt == nil {
 		claims.IssuedAt = jwt.NewNumericDate(time.Now())
 	}
+}
+
+// Generate signs claims after applying issuer/TTL defaults for any zero
+// fields.
+func (s *HMACSigner) Generate(claims Claims) (string, error) {
+	applyDefaults(&claims, s.defaults)
 	return s.Sign(&claims)
 }
 

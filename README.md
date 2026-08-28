@@ -201,6 +201,34 @@ The default policy enforces length and nothing else, deliberately: composition r
 
 Argon2id's memory cost is *per concurrent hash* — at the default, 100 simultaneous logins wants roughly 1.9 GiB. Raise `Memory` only alongside a limit on concurrent authentication.
 
+## Token signing
+
+`jwt.HMACSigner` (HS256) is still there and is the right choice for a single binary. It has one property worth understanding before you deploy a second service: verifying a token needs the same secret that mints one, so **anything that can check an authit token can also forge one** — including an impersonation token, since `Claims.ActorID` is an ordinary field.
+
+For anything beyond one process, sign asymmetrically and hand out the public half:
+
+```go
+signer, _ := authitjwt.NewEd25519Signer(privateKey, authitjwt.Defaults{Issuer: "myapp"})
+// ...the issuing service uses `signer` exactly as it used an HMACSigner.
+
+// Publish, e.g. at /.well-known/jwks.json:
+doc, _ := signer.JWKS()
+
+// A downstream service holds only this. It cannot mint anything.
+verifier, _ := authitjwt.NewVerifier(publicKey)
+claims, err := authithttp.Validate(verifier, r)
+```
+
+`NewRS256Signer` is available where a consumer expects RS256; prefer Ed25519 otherwise — smaller keys and signatures, and no parameters to get wrong. Both refuse RSA keys under 2048 bits.
+
+The interface is split so this is enforced by the type system rather than by convention: `jwt.Verifier` has `Verify`/`Validate` only, `jwt.Signer` embeds it and adds `Sign`/`Generate`. Take a `Verifier` in anything that only checks tokens — `authithttp.Validate` and `authhandlers.NewUserHandler` both do. A `Signer` satisfies `Verifier`, so this narrowing broke no callers.
+
+**Key rotation** works because every asymmetric token carries a `kid` (the RFC 7638 thumbprint of the key, so both sides derive the same id without coordinating). Publish the new key alongside the old, wait for verifiers to pick up the set, switch the signer, then drop the old key once no unexpired token bears it:
+
+```go
+verifier, _ := authitjwt.NewVerifier(oldPublicKey, newPublicKey)
+```
+
 ## Email addresses and sessions
 
 **Addresses are normalised** — trimmed and lower-cased, via `store.NormalizeEmail` — before they reach a store, both when writing and when looking up. So a store can rely on the email column holding exactly that form and compare it with plain equality: no `citext`, no functional index, no case-insensitive collation required. Nothing more aggressive happens; stripping dots or `+tags` is Gmail-specific and would silently merge distinct addresses elsewhere.
@@ -230,7 +258,7 @@ Per-IP rate limiting is still yours: the lockout is account-scoped by design (so
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: `jwt` ships only an HMAC signer, so any service that validates a token can also mint one; there is no request rate limiting, which the device-authorization flow in particular assumes you supply; and there is no transaction boundary in the `store` ports, so multi-write flows are not atomic. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: there is no request rate limiting, which the device-authorization flow in particular assumes you supply; and there is no transaction boundary in the `store` ports, so multi-write flows are not atomic. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 

@@ -187,13 +187,14 @@ This is where the concrete defects are, and where the gap is not a design choice
 | Email normalisation | handled | **none** — `Alice@x.com` and `alice@x.com` become two accounts, or collide, depending on your store's collation |
 | Rate limiting | built in, per-path rules | none |
 | Brute-force response | rate limit | account lock (see below) |
-| Token signing | HS256, RS256, EdDSA, JWKS endpoint | **HS256 only** |
+| Token signing | HS256, RS256, EdDSA, JWKS endpoint | HS256, RS256, EdDSA, JWKS + verify-only keys *(was HS256 only)* |
 
 Six of these are worth calling out precisely, because they are bugs rather than missing features.
 They are listed worst-first.
 
-> **Status:** (a), (b), (c) and (f) are **fixed** — see T0.1–T0.3 — as are the password KDF and
-> policy rows above, via T0.4/T0.5. They are described below in the
+> **Status:** every defect below is now **fixed** — (a), (b), (c), (f) by T0.1–T0.3, (d) by T0.8, and
+> (e)'s documentation half by T0.8; only (e)'s rate limiter remains, and it depends on T1.4. The
+> password KDF and policy rows above are closed by T0.4/T0.5. They are described below in the
 > present tense as they were found, because the reasoning is what justifies the fix and the shape of
 > the defect is what the regression tests pin. (d) and (e) are still open.
 
@@ -352,6 +353,121 @@ rather than permanent, and is documented in the README.
 *Tests:* `user/lockout_test.go` — `TestFailedLoginsDoNotWriteAdministrativeLock`,
 `TestThrottleLiftsWithoutOperatorAction`, `TestAdministrativeLockStillBlocksLogin`,
 `TestThrottleAppliesToUnknownAddresses`; `superuser/superuser_test.go`.
+
+**T0.9 (partial) — §2.7(f) reconciled** as a side effect of T0.3; §2.7(e) (device-code rate limiting)
+still open and still depends on T1.4.
+
+**T0.4 — Make password hashing pluggable, and default to argon2id.** ✅ *Done.* `crypto.Hasher`
+(`Hash`/`Verify`/`NeedsRehash`) with `crypto.Argon2idHasher` (the new default, OWASP minimum
+parameters, PHC string encoding so the parameters travel with each hash) and `crypto.BcryptHasher`.
+Both dispatch `Verify` on the hash's own prefix, so either accepts anything authit has ever written —
+without that property, changing the hasher would lock out every existing user. `Authenticate` on both
+planes re-hashes after a successful password check when `NeedsRehash` reports the stored hash is
+weaker than current settings, so an existing bcrypt corpus migrates itself with no migration script.
+Best-effort: the stored hash stays valid if the rewrite fails, so it can never fail a login.
+*Changed:* `crypto/hasher.go` (new), `user/config.go`, `user/register_login.go`, `user/password.go`,
+`superuser/service.go`, `superuser/auth.go`, `user/errors.go`, `superuser/errors.go`.
+*Tests:* `crypto/hasher_test.go` (round trip, cross-format verification, `NeedsRehash` thresholds,
+malformed input), `user/hashing_test.go` (`TestPasswordHashUpgradesOnLogin`,
+`TestUpgradeDoesNotHappenForCurrentHashes`), `superuser/superuser_test.go`.
+
+**T0.5 — Add a password policy seam.** ✅ *Done*, in `crypto` rather than `user` so both planes share
+one type: `crypto.PasswordValidator`, with `LengthPolicy`, `NotEmailPolicy` and `AllPolicies` as
+composable pieces and `DefaultPasswordPolicy()` (12–1024 runes) as the non-nil default. Enforced on
+`Register`, `ChangePassword`, `ResetPassword` and `createSuperuser`.
+
+Two decisions worth recording:
+
+- **The policy is not consulted on login.** Raising it must not lock out the users it was raised to
+  protect. Pinned by `TestPasswordPolicyIsNotAppliedOnLogin`.
+- **Length only, by default.** Composition rules reduce entropy by steering people toward predictable
+  substitutions, and a breach-list check needs a corpus authit should not ship. `AllPolicies` is the
+  seam for adding one.
+
+Length is counted in runes, not bytes, so a 12-character minimum does not silently demand 12 bytes of
+a script whose characters are three bytes each. The maximum exists because a password is
+attacker-controlled input to a deliberately expensive function.
+
+*Changed:* `crypto/policy.go` (new), `user/config.go`, `user/register_login.go`, `user/password.go`,
+`superuser/service.go`. *Tests:* `crypto/hasher_test.go`, `user/hashing_test.go`.
+
+> **Note for existing consumers:** T0.5 is the one change in this tier that can break a working
+> application at runtime rather than at compile time — any account whose password is under 12
+> characters can no longer change or reset it to the same value, and seeded/test fixtures with short
+> passwords will start failing at `Register`. Set `PasswordValidator` explicitly to keep the old
+> behaviour. The repo's own test fixtures were updated rather than the default weakened.
+
+**T0.6 — Normalise email on the way in.** ✅ *Done.* `store.NormalizeEmail` (trim + lower-case),
+applied at the entry point of every method that takes an address: `Register`, `Authenticate`,
+`RequestPasswordReset`, `RequestEmailVerificationByEmail`, `createSuperuser`, `superuser.Authenticate`,
+`team.CreateInvitation` and `team.AcceptInvitation`.
+
+It lives in `store` because the invariant is a storage-contract statement — *the value authit writes
+to and queries the email column with is always this form* — which means an implementation needs no
+`citext`, no `lower()` index and no case-insensitive collation. Previously authit's behaviour on
+`Alice@` vs `alice@` was decided entirely by the host's collation: one account or two, silently.
+
+The security half is less obvious than the duplicate-account half: the failed-login counter is keyed
+by email, so before this an attacker could reset their own throttle just by varying capitalisation.
+`TestThrottleCannotBeResetByVaryingCase` pins it.
+
+Lower-casing the whole address is formally lossy — RFC 5321 makes the local part case-sensitive — but
+it matches what providers do, and letting case create duplicate accounts is the worse failure.
+Dot-stripping and `+tag` removal are deliberately absent: Gmail-specific, and they merge genuinely
+distinct addresses elsewhere.
+
+*Note for existing consumers:* rows written before this need a one-time
+`UPDATE ... SET email = lower(btrim(email))`, documented on `NormalizeEmail` and in the README.
+*Changed:* `store/email.go` (new), `user/register_login.go`, `user/password.go`,
+`user/email_verification.go`, `superuser/auth.go`, `superuser/service.go`, `team/invitations.go`.
+*Tests:* `user/normalization_test.go`, `superuser/superuser_test.go`.
+
+**T0.7 — Refresh-token reuse detection.** ✅ *Done.* A revoked-but-unexpired refresh token presented
+to `Refresh` now revokes every refresh token the principal holds and emits `EventUserTokenReuse` /
+`EventSuperuserTokenReuse`. Rotation means the legitimate holder never re-sends a spent token, so a
+second use means two parties hold it — and nothing at that point can distinguish them, so both are
+forced back through a password login, which only one of them can complete.
+
+Three decisions:
+
+- **The error stays `ErrInvalidToken`**, byte-identical to what a garbage token returns. A distinct
+  error would confirm to an attacker that a stolen token was genuine and already spent — exactly the
+  fact worth withholding. `TestRefreshReuseIsIndistinguishableFromGarbage` pins it.
+- **Expired tokens do not trip it.** An expired token is not evidence of theft and must not take the
+  user's other sessions down.
+- **A replayed logged-out token does trip it**, an accepted false positive: distinguishing it would
+  need a revocation-reason column, and the session was over anyway. Documented rather than hidden,
+  since it puts noise in the audit trail.
+
+*Changed:* `user/register_login.go`, `superuser/auth.go`, `audit/audit.go`.
+*Tests:* `user/refresh_reuse_test.go`, `superuser/superuser_test.go`. The user-plane test was
+confirmed to fail against the previous implementation.
+
+**T0.8 — Add an asymmetric signer.** ✅ *Done.* `jwt.Verifier` (`Verify`/`Validate`) split out of
+`jwt.Signer`, which now embeds it — so every existing implementation and call site still compiles, and
+narrowing a parameter to `Verifier` breaks no caller. `authithttp.Validate` and
+`authhandlers.NewUserHandler` both take the narrow type now.
+
+`jwt.AsymmetricSigner` via `NewRS256Signer` / `NewEd25519Signer`, with `Verifier()`, `PublicKey()`,
+`KeyID()` and `JWKS()`. `jwt.NewVerifier(publicKeys...)` builds a value that holds no private key and
+therefore cannot mint anything — the property `HMACSigner` structurally cannot offer. `jwt.JWKS` and
+`jwt.KeyID` render RFC 7517 key sets and RFC 7638 thumbprints; tokens carry the thumbprint as `kid`,
+so a verifier holding several keys can select the right one and a rotation needs no coordination
+beyond publishing the set.
+
+*Corrected mid-implementation:* the algorithm-pinning in `methodMatchesKey` was first documented as
+"the check that stops algorithm confusion", and a test was written asserting it produced a 401 where
+its absence would produce a 500. Measuring rather than assuming showed both claims were wrong:
+golang-jwt already refuses an HS256-signed token when the keyfunc returns an `*rsa.PublicKey`, and the
+error wraps `ErrTokenSignatureInvalid` either way — so the attack fails and returns 401 with the
+pinning removed. What the pinning genuinely changes is that the error no longer *also* wraps
+`ErrInvalidKeyType`, the sentinel that everywhere else means "this server is misconfigured"; without
+it, an operator watching that signal is paged by an attacker. The comment and tests now say that, and
+`TestAlgorithmConfusionKeepsErrorSignalsDistinct` fails when the pinning is removed. The pinning is
+defence in depth, and is documented as such.
+
+*Changed:* `jwt/signer.go`, `jwt/asymmetric.go` (new), `jwt/jwks.go` (new), `authithttp/validate.go`,
+`authhandlers/authhandlers.go`. *Tests:* `jwt/asymmetric_test.go`, `authithttp/authithttp_test.go`.
 
 **T0.9 (partial) — §2.7(f) reconciled** as a side effect of T0.3; §2.7(e) (device-code rate limiting)
 still open and still depends on T1.4.

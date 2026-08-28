@@ -23,14 +23,14 @@ var (
 	ErrInvalidToken = errors.New("authit/http: invalid bearer token")
 )
 
-// Validate extracts the request's bearer token and verifies it with s.
+// Validate extracts the request's bearer token and verifies it with v.
 //
 // The error it returns is classified, which is the point of the function.
 // ErrNoToken and ErrInvalidToken both mean "this request is not
-// authenticated" (401). Anything else means the signer could not do its job
-// at all — a key that isn't valid for its algorithm, or, for a Signer that
-// fetches keys, a fetch that failed — which is a server fault (500), not the
-// caller's. Pass the error to StatusFor rather than assuming every failure
+// authenticated" (401). Anything else means the verifier could not do its
+// job at all — a key that isn't valid for its algorithm, or, for a Verifier
+// that fetches keys, a fetch that failed — which is a server fault (500),
+// not the caller's. Pass the error to StatusFor rather than assuming every failure
 // here is a 401; collapsing the two hides a misconfigured deployment behind
 // a wall of plausible-looking auth failures.
 //
@@ -47,15 +47,20 @@ var (
 //     true and Claims.ActorID names the operator. The token is genuine, so
 //     Validate accepts it; a route where acting-as-someone-else should not
 //     be allowed must check IsImpersonation itself.
-func Validate(s authitjwt.Signer, r *http.Request) (authitjwt.Claims, error) {
-	if s == nil {
-		return authitjwt.Claims{}, errors.New("authit/http: nil signer")
+//
+// It takes a Verifier rather than a Signer deliberately. Checking a token
+// needs no ability to mint one, and with an asymmetric key the verifying
+// half is safe to distribute where the signing half is not — see
+// jwt.NewVerifier. A Signer satisfies Verifier, so passing one still works.
+func Validate(v authitjwt.Verifier, r *http.Request) (authitjwt.Claims, error) {
+	if v == nil {
+		return authitjwt.Claims{}, errors.New("authit/http: nil verifier")
 	}
 	token, ok := BearerToken(r)
 	if !ok {
 		return authitjwt.Claims{}, ErrNoToken
 	}
-	claims, err := s.Validate(token)
+	claims, err := v.Validate(token)
 	if err != nil {
 		if isTokenFault(err) {
 			return authitjwt.Claims{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
@@ -84,7 +89,7 @@ func StatusFor(err error) int {
 // tokenFaults are the golang-jwt sentinels that mean the *token* was at
 // fault. Everything else it can return (ErrInvalidKey, ErrInvalidKeyType,
 // ErrHashUnavailable) means the verifying side was, as does any error from a
-// custom Signer that isn't one of these at all.
+// custom Verifier that isn't one of these at all.
 var tokenFaults = []error{
 	jwtlib.ErrTokenMalformed,
 	jwtlib.ErrTokenUnverifiable,
