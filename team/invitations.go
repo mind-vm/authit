@@ -15,6 +15,7 @@ import (
 // raw invitation token — hand it to the invitee (typically embedded in an
 // emailed link); only its hash is persisted.
 func (s *Service) CreateInvitation(ctx context.Context, teamID, invitedByMemberID, email string, role store.Role) (string, store.Invitation, error) {
+	email = store.NormalizeEmail(email)
 	members, err := s.stores.Members.ListMembersByTeam(ctx, teamID)
 	if err != nil {
 		return "", store.Invitation{}, err
@@ -77,6 +78,9 @@ func (s *Service) getPendingInvitation(ctx context.Context, rawToken string) (*s
 // userID to the invitation's team with the invited role. email must match
 // the address the invitation was sent to.
 func (s *Service) AcceptInvitation(ctx context.Context, rawToken, userID, email, displayName string) (store.Member, error) {
+	// Both sides normalised, so the equality check below cannot be defeated
+	// -- or accidentally failed -- by the case the accepting user typed.
+	email = store.NormalizeEmail(email)
 	inv, err := s.getPendingInvitation(ctx, rawToken)
 	if err != nil {
 		return store.Member{}, err

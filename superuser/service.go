@@ -137,6 +137,7 @@ func (s *Service) CreateSuperuser(ctx context.Context, email, password, displayN
 }
 
 func (s *Service) createSuperuser(ctx context.Context, email, password, displayName string, createdBy *string) (store.Superuser, error) {
+	email = store.NormalizeEmail(email)
 	if err := s.cfg.PasswordValidator(ctx, email, password); err != nil {
 		return store.Superuser{}, err
 	}

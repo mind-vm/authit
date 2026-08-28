@@ -253,3 +253,73 @@ func TestSuperuserPasswordPolicyAndHashUpgrade(t *testing.T) {
 		t.Fatalf("expected the hash to be upgraded to argon2id, got %q", stored.PasswordHash)
 	}
 }
+
+// TestSuperuserRefreshTokenReuseRevokesTheFamily mirrors the user plane.
+// It matters more here: these tokens can mint impersonation tokens.
+func TestSuperuserRefreshTokenReuseRevokesTheFamily(t *testing.T) {
+	ctx := context.Background()
+	stores := superuser.Stores{
+		Superusers:    memstore.NewSuperuserStore(),
+		RefreshTokens: memstore.NewSuperuserRefreshTokenStore(),
+	}
+	svc, err := superuser.NewService(stores, newSigner(t), superuser.Config{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	const email, password = "ops@example.com", "correct-horse-battery"
+	if _, err := svc.Bootstrap(ctx, email, password, "Ops"); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	first, err := svc.Authenticate(ctx, email, password, "ua", "ip")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	other, err := svc.Authenticate(ctx, email, password, "ua", "ip")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	rotated, err := svc.Refresh(ctx, first.RefreshToken, "ua", "ip")
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	// Replay of the spent token.
+	if _, err := svc.Refresh(ctx, first.RefreshToken, "ua", "attacker-ip"); !errors.Is(err, superuser.ErrInvalidToken) {
+		t.Fatalf("expected ErrInvalidToken, got %v", err)
+	}
+	for name, tok := range map[string]string{"rotated": rotated.RefreshToken, "other session": other.RefreshToken} {
+		if _, err := svc.Refresh(ctx, tok, "ua", "ip"); !errors.Is(err, superuser.ErrInvalidToken) {
+			t.Fatalf("%s token should have been revoked, got %v", name, err)
+		}
+	}
+	if _, err := svc.Authenticate(ctx, email, password, "ua", "ip"); err != nil {
+		t.Fatalf("the operator must be able to recover by logging in: %v", err)
+	}
+}
+
+// TestSuperuserEmailIsNormalised: the operator plane shares the user
+// plane's email-keyed lockout counter, so it needs the same guarantee.
+func TestSuperuserEmailIsNormalised(t *testing.T) {
+	ctx := context.Background()
+	stores := superuser.Stores{
+		Superusers:    memstore.NewSuperuserStore(),
+		RefreshTokens: memstore.NewSuperuserRefreshTokenStore(),
+	}
+	svc, err := superuser.NewService(stores, newSigner(t), superuser.Config{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	su, err := svc.Bootstrap(ctx, "  Ops@Example.COM ", "correct-horse-battery", "Ops")
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if su.Email != "ops@example.com" {
+		t.Fatalf("stored email = %q, want the normalised form", su.Email)
+	}
+	for _, variant := range []string{"ops@example.com", "OPS@EXAMPLE.COM", " Ops@Example.com "} {
+		if _, err := svc.Authenticate(ctx, variant, "correct-horse-battery", "ua", "ip"); err != nil {
+			t.Fatalf("Authenticate(%q): %v", variant, err)
+		}
+	}
+}

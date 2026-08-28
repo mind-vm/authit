@@ -25,7 +25,7 @@ func (s *Service) RequestEmailVerification(ctx context.Context, userID string) e
 // it always succeeds regardless of whether the address is registered or
 // already verified, to avoid leaking account existence.
 func (s *Service) RequestEmailVerificationByEmail(ctx context.Context, email string) error {
-	u, err := s.stores.Users.GetUserByEmail(ctx, email)
+	u, err := s.stores.Users.GetUserByEmail(ctx, store.NormalizeEmail(email))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil

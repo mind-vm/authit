@@ -36,12 +36,17 @@ func (NoopLogger) Log(context.Context, Event) {}
 type EventType string
 
 const (
-	EventUserRegistered        EventType = "user.registered"
-	EventUserLoginSucceeded    EventType = "user.login.succeeded"
-	EventUserLoginFailed       EventType = "user.login.failed"
-	EventUserLoginLocked       EventType = "user.login.locked"
-	EventUserLogout            EventType = "user.logout"
-	EventUserTokenRefreshed    EventType = "user.token.refreshed"
+	EventUserRegistered     EventType = "user.registered"
+	EventUserLoginSucceeded EventType = "user.login.succeeded"
+	EventUserLoginFailed    EventType = "user.login.failed"
+	EventUserLoginLocked    EventType = "user.login.locked"
+	EventUserLogout         EventType = "user.logout"
+	EventUserTokenRefreshed EventType = "user.token.refreshed"
+	// EventUserTokenReuse is emitted when an already-revoked refresh token
+	// is presented before its expiry. That is evidence a token leaked, so
+	// every session for the principal is revoked in response. Route this
+	// one somewhere a human sees it.
+	EventUserTokenReuse        EventType = "user.token.reuse_detected"
 	EventUserSessionRevoked    EventType = "user.session.revoked"
 	EventUserPasswordChanged   EventType = "user.password.changed"
 	EventUserPasswordReset     EventType = "user.password.reset"
@@ -55,8 +60,11 @@ const (
 	EventSuperuserLoginLocked    EventType = "superuser.login.locked"
 	EventSuperuserLogout         EventType = "superuser.logout"
 	EventSuperuserTokenRefreshed EventType = "superuser.token.refreshed"
-	EventSuperuserDeactivated    EventType = "superuser.deactivated"
-	EventSuperuserImpersonated   EventType = "superuser.impersonated"
+	// EventSuperuserTokenReuse is the operator-plane counterpart of
+	// EventUserTokenReuse.
+	EventSuperuserTokenReuse   EventType = "superuser.token.reuse_detected"
+	EventSuperuserDeactivated  EventType = "superuser.deactivated"
+	EventSuperuserImpersonated EventType = "superuser.impersonated"
 
 	EventTeamCreated             EventType = "team.created"
 	EventTeamMemberRoleChanged   EventType = "team.member.role_changed"

@@ -13,6 +13,7 @@ import (
 // Register creates a new user with the given email/password. The password
 // is hashed before storage; the plaintext never leaves this call.
 func (s *Service) Register(ctx context.Context, email, password string) (store.User, error) {
+	email = store.NormalizeEmail(email)
 	if err := s.cfg.PasswordValidator(ctx, email, password); err != nil {
 		return store.User{}, err
 	}
@@ -55,6 +56,11 @@ func (s *Service) Register(ctx context.Context, email, password string) (store.U
 // account whose address is unverified is refused with ErrEmailNotVerified;
 // see EmailVerificationPolicy for when to relax that.
 func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, ipAddress string) (AuthResult, error) {
+	// Normalised once, here, so that the account lookup and the
+	// failed-login counter -- which is keyed by email -- agree. If they
+	// disagreed, varying the case would reset the throttle.
+	email = store.NormalizeEmail(email)
+
 	locked, u, err := s.checkLockoutAndFetchUser(ctx, email)
 	if err != nil {
 		return AuthResult{}, err
@@ -193,6 +199,29 @@ func (s *Service) recordFailedLogin(ctx context.Context, email, ipAddress string
 	})
 }
 
+// revokeFamilyOnReuse handles a replayed refresh token: it revokes every
+// refresh token the principal holds and records the event.
+//
+// The caller still returns ErrInvalidToken, the same error a garbage token
+// gets. Reporting reuse distinctly would tell an attacker holding a stolen
+// token that it was genuine and had already been spent, which is precisely
+// the thing worth not confirming.
+//
+// Revocation is best-effort in the sense that its failure is recorded and
+// does not change the returned error -- the request is being refused
+// either way.
+func (s *Service) revokeFamilyOnReuse(ctx context.Context, t *store.RefreshToken, userAgent, ipAddress string) {
+	result := audit.ResultSuccess
+	if err := s.stores.RefreshTokens.RevokeAllUserRefreshTokens(ctx, t.UserID); err != nil {
+		result = audit.ResultFailure
+	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventUserTokenReuse, Result: result, ActorID: t.UserID,
+		UserAgent: userAgent, IPAddress: ipAddress,
+		Metadata: map[string]any{"refresh_token_id": t.ID},
+	})
+}
+
 // rehashIfNeeded re-hashes u's password with the configured hasher when the
 // stored hash is weaker than current settings, so a corpus migrates itself
 // as users log in. Best-effort: a failure here must never fail a login that
@@ -221,7 +250,22 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 		}
 		return TokenPair{}, err
 	}
-	if t.RevokedAt != nil || time.Now().After(t.ExpiresAt) {
+	if time.Now().After(t.ExpiresAt) {
+		return TokenPair{}, ErrInvalidToken
+	}
+	if t.RevokedAt != nil {
+		// A revoked but unexpired token was just presented. Refresh
+		// rotates -- it revokes the token it consumes -- so the legitimate
+		// holder never has a reason to send this one again. Somebody has a
+		// copy of a token somebody else already spent, and there is no way
+		// to tell from here which of the two is the attacker. Revoking the
+		// whole family ends both sessions and forces a fresh login, which
+		// only the party who knows the password can complete.
+		//
+		// This also fires when a token revoked by Logout is replayed, which
+		// is harmless (that session is already over) but will show up in
+		// the audit trail -- it is worth knowing about either way.
+		s.revokeFamilyOnReuse(ctx, t, userAgent, ipAddress)
 		return TokenPair{}, ErrInvalidToken
 	}
 	u, err := s.stores.Users.GetUserByID(ctx, t.UserID)

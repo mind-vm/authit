@@ -396,17 +396,51 @@ attacker-controlled input to a deliberately expensive function.
 > passwords will start failing at `Register`. Set `PasswordValidator` explicitly to keep the old
 > behaviour. The repo's own test fixtures were updated rather than the default weakened.
 
-**T0.6 — Normalise email on the way in.**
-Lowercase and trim in `Register`, `Authenticate`, `RequestPasswordReset`,
-`RequestEmailVerificationByEmail`, and `team.CreateInvitation` — or, better, add a single
-`crypto.NormalizeEmail` and document that stores must treat the column as case-insensitive. Today the
-behaviour depends entirely on the adapter's collation, which is the worst of both worlds.
+**T0.6 — Normalise email on the way in.** ✅ *Done.* `store.NormalizeEmail` (trim + lower-case),
+applied at the entry point of every method that takes an address: `Register`, `Authenticate`,
+`RequestPasswordReset`, `RequestEmailVerificationByEmail`, `createSuperuser`, `superuser.Authenticate`,
+`team.CreateInvitation` and `team.AcceptInvitation`.
 
-**T0.7 — Refresh-token reuse detection.**
-`GetRefreshTokenByHash` already returns revoked tokens; the service discards them. On presentation of
-a revoked-but-unexpired token, call `RevokeAllUserRefreshTokens` and emit an `audit.Event` — a
-replayed token is a compromise signal, not a no-op.
-*Touches:* `user/register_login.go:149`, `audit/audit.go` (new event type).
+It lives in `store` because the invariant is a storage-contract statement — *the value authit writes
+to and queries the email column with is always this form* — which means an implementation needs no
+`citext`, no `lower()` index and no case-insensitive collation. Previously authit's behaviour on
+`Alice@` vs `alice@` was decided entirely by the host's collation: one account or two, silently.
+
+The security half is less obvious than the duplicate-account half: the failed-login counter is keyed
+by email, so before this an attacker could reset their own throttle just by varying capitalisation.
+`TestThrottleCannotBeResetByVaryingCase` pins it.
+
+Lower-casing the whole address is formally lossy — RFC 5321 makes the local part case-sensitive — but
+it matches what providers do, and letting case create duplicate accounts is the worse failure.
+Dot-stripping and `+tag` removal are deliberately absent: Gmail-specific, and they merge genuinely
+distinct addresses elsewhere.
+
+*Note for existing consumers:* rows written before this need a one-time
+`UPDATE ... SET email = lower(btrim(email))`, documented on `NormalizeEmail` and in the README.
+*Changed:* `store/email.go` (new), `user/register_login.go`, `user/password.go`,
+`user/email_verification.go`, `superuser/auth.go`, `superuser/service.go`, `team/invitations.go`.
+*Tests:* `user/normalization_test.go`, `superuser/superuser_test.go`.
+
+**T0.7 — Refresh-token reuse detection.** ✅ *Done.* A revoked-but-unexpired refresh token presented
+to `Refresh` now revokes every refresh token the principal holds and emits `EventUserTokenReuse` /
+`EventSuperuserTokenReuse`. Rotation means the legitimate holder never re-sends a spent token, so a
+second use means two parties hold it — and nothing at that point can distinguish them, so both are
+forced back through a password login, which only one of them can complete.
+
+Three decisions:
+
+- **The error stays `ErrInvalidToken`**, byte-identical to what a garbage token returns. A distinct
+  error would confirm to an attacker that a stolen token was genuine and already spent — exactly the
+  fact worth withholding. `TestRefreshReuseIsIndistinguishableFromGarbage` pins it.
+- **Expired tokens do not trip it.** An expired token is not evidence of theft and must not take the
+  user's other sessions down.
+- **A replayed logged-out token does trip it**, an accepted false positive: distinguishing it would
+  need a revocation-reason column, and the session was over anyway. Documented rather than hidden,
+  since it puts noise in the audit trail.
+
+*Changed:* `user/register_login.go`, `superuser/auth.go`, `audit/audit.go`.
+*Tests:* `user/refresh_reuse_test.go`, `superuser/superuser_test.go`. The user-plane test was
+confirmed to fail against the previous implementation.
 
 **T0.8 — Add an asymmetric signer.**
 `jwt.NewRS256Signer(privateKey)` / `jwt.NewEd25519Signer(...)`, plus a **verify-only** type

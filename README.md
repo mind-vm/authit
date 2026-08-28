@@ -201,6 +201,20 @@ The default policy enforces length and nothing else, deliberately: composition r
 
 Argon2id's memory cost is *per concurrent hash* — at the default, 100 simultaneous logins wants roughly 1.9 GiB. Raise `Memory` only alongside a limit on concurrent authentication.
 
+## Email addresses and sessions
+
+**Addresses are normalised** — trimmed and lower-cased, via `store.NormalizeEmail` — before they reach a store, both when writing and when looking up. So a store can rely on the email column holding exactly that form and compare it with plain equality: no `citext`, no functional index, no case-insensitive collation required. Nothing more aggressive happens; stripping dots or `+tags` is Gmail-specific and would silently merge distinct addresses elsewhere.
+
+If you have rows written before this, normalise the column once before deploying — an address stored with upper-case characters will no longer be found:
+
+```sql
+UPDATE users SET email = lower(btrim(email)) WHERE email <> lower(btrim(email));
+```
+
+**Refresh tokens rotate, and reuse is treated as a compromise.** `Refresh` revokes the token it consumes, so a legitimate client never sends the same one twice. If a revoked-but-unexpired token is presented, authit revokes *every* refresh token that principal holds and emits `audit.EventUserTokenReuse` — two parties hold a token that should have been spent once, and there is no way to tell which is the attacker, so both are forced back through a password login. The caller still gets `ErrInvalidToken`, identical to what a garbage token returns: a distinct error would confirm to an attacker that a stolen token was genuine.
+
+One accepted false positive: a token revoked by `Logout` and then replayed is indistinguishable from a leak without storing a revocation reason, so it trips the same path. That session was already over, so nothing is lost — but it will appear in your audit trail. Route `EventUserTokenReuse` somewhere a human sees it.
+
 ## Brute-force protection
 
 Failed logins are counted per email address over `Config.FailedLoginWindow` (15 minutes by default). Once `Config.MaxFailedLoginAttempts` (5) is reached the address is in *temporary lockout* and `Authenticate` returns `ErrAccountLocked` until the recorded attempts age out. Nothing is stored and nothing has to unlock it.
@@ -216,7 +230,7 @@ Per-IP rate limiting is still yours: the lockout is account-scoped by design (so
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: email addresses are not normalised, so case handling depends on your store's collation; refresh-token rotation does not detect reuse of a revoked token; and `jwt` ships only an HMAC signer, so any service that validates a token can also mint one. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: `jwt` ships only an HMAC signer, so any service that validates a token can also mint one; there is no request rate limiting, which the device-authorization flow in particular assumes you supply; and there is no transaction boundary in the `store` ports, so multi-write flows are not atomic. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 

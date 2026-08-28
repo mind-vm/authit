@@ -14,6 +14,10 @@ import (
 // Authenticate verifies email/password against the superuser table and
 // issues a token pair scoped to this plane's audience.
 func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, ipAddress string) (TokenPair, error) {
+	// Normalised once so the account lookup and the email-keyed
+	// failed-login counter agree; see store.NormalizeEmail.
+	email = store.NormalizeEmail(email)
+
 	// Checked before the account lookup, and keyed by email, so an unknown
 	// address and a throttled one behave identically.
 	throttled, err := s.throttled(ctx, email)
@@ -142,7 +146,22 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 		}
 		return TokenPair{}, err
 	}
-	if t.RevokedAt != nil || time.Now().After(t.ExpiresAt) {
+	if time.Now().After(t.ExpiresAt) {
+		return TokenPair{}, ErrInvalidToken
+	}
+	if t.RevokedAt != nil {
+		// Replay of a token this plane already spent -- see the user
+		// plane's Refresh for the reasoning. It matters more here: these
+		// tokens can impersonate.
+		result := audit.ResultSuccess
+		if err := s.stores.RefreshTokens.RevokeAllSuperuserRefreshTokens(ctx, t.SuperuserID); err != nil {
+			result = audit.ResultFailure
+		}
+		s.audit.Log(ctx, audit.Event{
+			Type: audit.EventSuperuserTokenReuse, Result: result, ActorID: t.SuperuserID,
+			UserAgent: userAgent, IPAddress: ipAddress,
+			Metadata: map[string]any{"refresh_token_id": t.ID},
+		})
 		return TokenPair{}, ErrInvalidToken
 	}
 	su, err := s.stores.Superusers.GetSuperuserByID(ctx, t.SuperuserID)

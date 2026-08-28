@@ -41,7 +41,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 // registered, so callers can return the same response either way and avoid
 // leaking account existence.
 func (s *Service) RequestPasswordReset(ctx context.Context, email string) error {
-	u, err := s.stores.Users.GetUserByEmail(ctx, email)
+	u, err := s.stores.Users.GetUserByEmail(ctx, store.NormalizeEmail(email))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil
