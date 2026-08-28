@@ -1,12 +1,16 @@
-// Package authithttp is the only HTTP wiring authit ships: RFC-correct
-// bearer-token extraction, token validation, and the classification of what
-// went wrong. It imports net/http and nothing else beyond authit's own jwt
-// package — no router, no http.Handler, no context key, no opinion about
-// what a 401 body looks like. Those are the host application's business.
+// Package authithttp is the only HTTP wiring authit's core ships:
+// RFC-correct bearer-token extraction, token validation, the
+// classification of what went wrong, and refresh-token cookies. It imports
+// net/http and nothing else beyond authit's own jwt package — no router, no
+// http.Handler, no context key, no opinion about what a 401 body looks
+// like. Those are the host application's business.
 //
-// It exists because this one step is identical in every consumer and
-// security-critical when got slightly wrong. The obvious hand-rolled version
-// has several quiet failure modes:
+// Everything here earns its place the same way: the step is identical in
+// every consumer, and quietly security-critical when got slightly wrong.
+//
+// # Bearer tokens
+//
+// The obvious hand-rolled version has several quiet failure modes:
 //
 //   - strings.TrimPrefix(h, "Bearer ") returns the header unchanged when the
 //     prefix is absent, so a malformed header silently becomes a token
@@ -25,6 +29,17 @@
 //		return
 //	}
 //	// claims.Subject is the user ID; put it wherever your app keeps it.
+//
+// # Refresh cookies
+//
+// The access token belongs in an Authorization header, which is what
+// BearerToken reads. The refresh token does not: it is long-lived, so
+// putting it anywhere JavaScript can reach means any XSS anywhere in the
+// application yields a credential that outlives every access token. See
+// SetRefreshCookie, ClearRefreshCookie and RefreshCookie, which take the
+// decisions that are not really decisions — HttpOnly, Secure, SameSite —
+// out of the caller's hands, and refuse to write a cookie the browser will
+// silently discard.
 package authithttp
 
 import (

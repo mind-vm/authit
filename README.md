@@ -124,6 +124,31 @@ if err != nil {
 
 That's the whole package: `BearerToken`, `Validate`, `StatusFor`. No `http.Handler`, no context key, no opinion about your error envelope. Note that `Validate` accepts an impersonation token (`claims.IsImpersonation()`, minted via `superuser.Impersonate`) — it's genuine, so whether acting-as is allowed on a given route is yours to check. If you want revocation to take effect before token expiry, re-resolve the principal from your own storage and treat claims beyond the subject as hints.
 
+### Refresh-token cookies
+
+`authithttp` is a service-layer library's one concession to HTTP, and refresh cookies are the second thing in it, for the same reason as bearer parsing: identical in every consumer, and easy to get quietly wrong. Left as "the caller's business", a refresh token ends up in `localStorage`, where any XSS anywhere in the app reads a credential that outlives every access token.
+
+```go
+opts := authithttp.CookieOptions{
+	Path:   "/auth/refresh",              // required — see below
+	MaxAge: 7 * 24 * time.Hour,           // match user.Config.RefreshTokenTTL
+}
+err := authithttp.SetRefreshCookie(w, tokens.RefreshToken, opts)
+token, ok := authithttp.RefreshCookie(r, opts)
+err = authithttp.ClearRefreshCookie(w, opts)  // on logout
+```
+
+`HttpOnly` is always set and is **not configurable** — no use case justifies a refresh token readable from JavaScript. `Secure` and `SameSite=Strict` are the defaults; the only way to drop `Secure` is a field named `Insecure`, so the unsafe choice is the one you have to type.
+
+`Path` is required rather than defaulting to `/`, because scoping it is the point: attached to your refresh route, the cookie rides one request instead of every request the browser makes to your origin.
+
+These functions return an error rather than writing a cookie the browser will throw away — which is the failure mode worth catching, since a browser discards a bad `Set-Cookie` **silently**:
+
+- A `__Host-` or `__Secure-` name whose prefix rules the other attributes break (`__Host-` requires `Path="/"` and no `Domain`, which is a real trade against path scoping).
+- A token containing bytes that aren't RFC 6265 cookie-octets. `net/http` strips those rather than failing, so the cookie would be written, stored, and read back shorter than it went in.
+
+`ClearRefreshCookie` takes the same options as `SetRefreshCookie` on purpose: a browser matches a deletion by name, domain *and* path, so clearing with a different path leaves the credential in place while the user appears to have logged out.
+
 ### Ready-made HTTP routes (`authhandlers`)
 
 If you'd rather not hand-write the request/response plumbing, [`authhandlers`](authhandlers) is a separate module (own `go.mod`, like `sqlbstore`) with one mountable route group per plane. It depends on nothing beyond `net/http` and authit itself: no chi, no huma, no OpenAPI generator.
@@ -392,7 +417,7 @@ Leaving the field nil disables the control rather than breaking, the same shape 
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does); and there is no cookie helper, so storing a refresh token safely in a browser is still your call. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does), and there is no social/OIDC login. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 

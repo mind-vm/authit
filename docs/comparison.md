@@ -740,10 +740,36 @@ Three details worth recording:
 `crypto/usercode.go`. *Tests:* `ratelimit/ratelimit_test.go` (including `-race`),
 `user/ratelimit_test.go`, `device/ratelimit_test.go`, `superuser/superuser_test.go`.
 
-**T1.5 — Cookie helpers in `authithttp`.**
-`SetRefreshCookie(w, token, opts)` / `ClearRefreshCookie(w)` with `HttpOnly`, `Secure`, `SameSite`,
-and a `Path` scoped to the refresh route. Same justification as the existing bearer-parsing
-exception: it is short, identical everywhere, and quietly security-critical.
+**T1.5 — Cookie helpers in `authithttp`.** ✅ *Done.* `SetRefreshCookie`, `ClearRefreshCookie`,
+`RefreshCookie` and `CookieOptions`. It belongs in this package for the same reason bearer parsing
+does: identical in every consumer, and quietly security-critical. Left as "the caller's business", a
+refresh token ends up in `localStorage`.
+
+The design is mostly about removing choices rather than offering them:
+
+- **`HttpOnly` is not configurable.** No use case justifies a refresh token readable from JavaScript;
+  the access token, which scripts do need, goes in a header.
+- **The only way to drop `Secure` is a field named `Insecure`**, so the unsafe option is the one you
+  have to type. `SameSite` defaults to `Strict`, which costs a refresh cookie nothing.
+- **`Path` is required rather than defaulting to `/`.** Scoping it is the point of the helper — a
+  default would have made the unscoped cookie the silent outcome.
+
+The part worth more than the attributes is that these functions *refuse* rather than write a cookie
+the browser will discard, because a browser discards a bad `Set-Cookie` **silently** — no error, no
+cookie, and a login that looks successful until the first refresh fails. Two cases:
+
+- A `__Host-`/`__Secure-` name whose prefix rules the other attributes break. (`__Host-` requires
+  `Path="/"`, so it genuinely trades against path scoping rather than being a free win — stated
+  rather than picked.)
+- A token containing bytes outside RFC 6265's cookie-octet set. `net/http` strips those instead of
+  failing, so the cookie would be written, stored, and read back shorter than it went in.
+
+`ClearRefreshCookie` takes the same options as `SetRefreshCookie` deliberately: a browser matches a
+deletion by name, domain *and* path, so clearing with a different path leaves the credential in place
+while the user appears to have logged out.
+
+*Changed:* `authithttp/cookie.go` (new), `authithttp/bearer.go` (package doc).
+*Tests:* `authithttp/cookie_test.go`.
 
 **T1.6 — A store conformance suite.** ✅ *Done.* New `storetest` package: `RunAll` plus one `Run*`
 per port, 53 subtests. `memstore` runs it (it had **no test files at all** before — its correctness was
