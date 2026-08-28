@@ -1,6 +1,20 @@
 package device
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/mind-vm/authit/ratelimit"
+)
+
+// ErrRateLimited is returned when Config.RateLimiter refuses a user-code
+// lookup or an approval. Alias for ratelimit.ErrRateLimited.
+//
+// It is deliberately distinct from ErrInvalidUserCode: a host must not
+// report it as "wrong code", because the caller's code may well have been
+// right. RFC 8628 has no error code for this at the verification endpoint,
+// which is a UI surface rather than a token endpoint — 429 with a
+// try-again message is the sensible rendering.
+var ErrRateLimited = ratelimit.ErrRateLimited
 
 // These map directly to RFC 8628 §3.5's token-endpoint error codes; a host
 // application's HTTP layer translates them to the matching

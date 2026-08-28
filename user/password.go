@@ -41,7 +41,16 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 // registered, so callers can return the same response either way and avoid
 // leaking account existence.
 func (s *Service) RequestPasswordReset(ctx context.Context, email string) error {
-	u, err := s.stores.Users.GetUserByEmail(ctx, store.NormalizeEmail(email))
+	email = store.NormalizeEmail(email)
+	// Keyed by address, and checked before the account lookup, so it
+	// applies identically whether or not the address is registered -- this
+	// path deliberately reveals nothing either way. It bounds using
+	// password reset to flood somebody's inbox.
+	if err := s.limit(ctx, "password-reset:email:"+email); err != nil {
+		return err
+	}
+
+	u, err := s.stores.Users.GetUserByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil

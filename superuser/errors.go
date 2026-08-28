@@ -4,7 +4,13 @@ import (
 	"errors"
 
 	authitcrypto "github.com/mind-vm/authit/crypto"
+	"github.com/mind-vm/authit/ratelimit"
 )
+
+// ErrRateLimited is returned when Config.RateLimiter refuses a login.
+// Alias for ratelimit.ErrRateLimited. A limiter's own failure is propagated
+// unchanged instead.
+var ErrRateLimited = ratelimit.ErrRateLimited
 
 // ErrWeakPassword is returned by Bootstrap and CreateSuperuser when
 // Config.PasswordValidator rejects the password. Alias for

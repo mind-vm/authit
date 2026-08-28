@@ -67,6 +67,12 @@ func (s *Service) uniqueUserCode(ctx context.Context) (string, error) {
 // already-authenticated web session after the user types/confirms the
 // code — device does not itself authenticate callerUserID.
 func (s *Service) ApproveDeviceAuthorization(ctx context.Context, callerUserID, userCode string) error {
+	// Per-caller, before the lookup: one authenticated account gets a
+	// bounded number of guesses regardless of what the global counter is
+	// doing.
+	if err := s.cfg.RateLimiter.Allow(ctx, "device:approve:"+callerUserID); err != nil {
+		return err
+	}
 	d, err := s.pendingByUserCode(ctx, userCode)
 	if err != nil {
 		return err
@@ -95,18 +101,40 @@ func (s *Service) DenyDeviceAuthorization(ctx context.Context, userCode string) 
 	return nil
 }
 
+// pendingByUserCode resolves a user code to a still-pending authorization.
+//
+// Every failure is charged to a single global budget, which is what bounds
+// enumeration of the 34.5-bit code space. Charging on failure rather than
+// on every call is what keeps the control cheap: a user typing their own
+// code correctly never touches it, so the budget exists almost entirely for
+// whoever is guessing.
 func (s *Service) pendingByUserCode(ctx context.Context, userCode string) (*store.DeviceAuthorization, error) {
 	d, err := s.stores.Authorizations.GetDeviceAuthorizationByUserCode(ctx, userCode)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, ErrInvalidUserCode
+			return nil, s.chargeFailedLookup(ctx)
 		}
 		return nil, err
 	}
 	if d.Status != store.DeviceAuthorizationPending || time.Now().After(d.ExpiresAt) {
-		return nil, ErrInvalidUserCode
+		return nil, s.chargeFailedLookup(ctx)
 	}
 	return d, nil
+}
+
+// chargeFailedLookup consumes one unit of the global guess budget and
+// returns the error the caller should surface: ErrRateLimited once the
+// budget is gone, ErrInvalidUserCode otherwise.
+//
+// The order matters. Returning ErrInvalidUserCode while still charging
+// would tell an attacker nothing, but it would also let them keep guessing;
+// returning ErrRateLimited once exhausted is what actually stops the sweep,
+// and it does not leak whether the code they tried was real.
+func (s *Service) chargeFailedLookup(ctx context.Context) error {
+	if err := s.cfg.RateLimiter.Allow(ctx, "device:user-code:failures"); err != nil {
+		return err
+	}
+	return ErrInvalidUserCode
 }
 
 // PollDeviceToken is what the CLI calls repeatedly with the device_code it

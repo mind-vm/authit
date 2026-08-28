@@ -10,6 +10,7 @@ import (
 	authitcrypto "github.com/mind-vm/authit/crypto"
 	authitjwt "github.com/mind-vm/authit/jwt"
 	"github.com/mind-vm/authit/memstore"
+	"github.com/mind-vm/authit/ratelimit"
 	"github.com/mind-vm/authit/superuser"
 )
 
@@ -321,5 +322,34 @@ func TestSuperuserEmailIsNormalised(t *testing.T) {
 		if _, err := svc.Authenticate(ctx, variant, "correct-horse-battery", "ua", "ip"); err != nil {
 			t.Fatalf("Authenticate(%q): %v", variant, err)
 		}
+	}
+}
+
+// TestSuperuserLoginIsRateLimited: the operator plane runs the same
+// expensive KDF, and these accounts can impersonate.
+func TestSuperuserLoginIsRateLimited(t *testing.T) {
+	ctx := context.Background()
+	stores := superuser.Stores{
+		Superusers:    memstore.NewSuperuserStore(),
+		RefreshTokens: memstore.NewSuperuserRefreshTokenStore(),
+	}
+	svc, err := superuser.NewService(stores, newSigner(t), superuser.Config{
+		RateLimiter: ratelimit.NewMemory(ratelimit.MemoryConfig{Burst: 2, Interval: time.Hour}),
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	const email, password = "ops@example.com", "correct-horse-battery"
+	if _, err := svc.Bootstrap(ctx, email, password, "Ops"); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if _, err := svc.Authenticate(ctx, email, "wrong-horse-battery", "ua", "1.2.3.4"); !errors.Is(err, superuser.ErrInvalidCredentials) {
+			t.Fatalf("attempt %d: %v", i+1, err)
+		}
+	}
+	if _, err := svc.Authenticate(ctx, email, password, "ua", "1.2.3.4"); !errors.Is(err, superuser.ErrRateLimited) {
+		t.Fatalf("expected ErrRateLimited, got %v", err)
 	}
 }

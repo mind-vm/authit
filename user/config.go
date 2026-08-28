@@ -5,6 +5,7 @@ import (
 
 	"github.com/mind-vm/authit/audit"
 	authitcrypto "github.com/mind-vm/authit/crypto"
+	"github.com/mind-vm/authit/ratelimit"
 )
 
 // EmailVerificationPolicy decides whether Authenticate refuses a login from
@@ -86,6 +87,34 @@ type Config struct {
 	// only). It is never consulted on login, so tightening it does not lock
 	// out existing users; set it to a no-op func to disable it entirely.
 	PasswordValidator authitcrypto.PasswordValidator
+	// RateLimiter throttles the paths where refusing early matters. Nil
+	// means ratelimit.Noop — the control is off, not broken.
+	//
+	// This does not replace rate limiting in your HTTP middleware, which
+	// sees routes, headers and every request; it covers what middleware
+	// cannot reach. Its most important job is refusing an attacker
+	// *before* Authenticate runs the password KDF: Argon2id costs 19 MiB
+	// and real CPU per attempt by default, so an unauthenticated flood is
+	// a resource-exhaustion vector regardless of whether any password is
+	// ever guessed.
+	//
+	// Keys passed to Allow, so an implementation can apply its own policy
+	// per operation:
+	//
+	//	login:ip:<ip>                      Authenticate, per source address
+	//	login:email:<email>                Authenticate, per account
+	//	two-factor:ip:<ip>                 VerifyTwoFactorLogin
+	//	two-factor:user:<user id>          VerifyTwoFactorLogin
+	//	password-reset:email:<email>       RequestPasswordReset
+	//	email-verification:email:<email>   RequestEmailVerificationByEmail
+	//	email-verification:user:<user id>  RequestEmailVerification
+	//
+	// The email in a key is always the normalised form (see
+	// store.NormalizeEmail), so case cannot be used to get a fresh budget.
+	// An empty IP address is skipped rather than collapsing every caller
+	// into one bucket, so a host that does not supply one loses the
+	// per-address limit but keeps the rest.
+	RateLimiter ratelimit.Limiter
 }
 
 func (c Config) withDefaults() Config {
@@ -121,6 +150,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.PasswordValidator == nil {
 		c.PasswordValidator = authitcrypto.DefaultPasswordPolicy()
+	}
+	if c.RateLimiter == nil {
+		c.RateLimiter = ratelimit.Noop{}
 	}
 	return c
 }

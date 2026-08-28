@@ -4,7 +4,17 @@ import (
 	"errors"
 
 	authitcrypto "github.com/mind-vm/authit/crypto"
+	"github.com/mind-vm/authit/ratelimit"
 )
+
+// ErrRateLimited is returned when Config.RateLimiter refuses an operation.
+// Alias for ratelimit.ErrRateLimited, so errors.Is matches either; use
+// ratelimit.RetryAfter to recover a wait hint for a 429 response.
+//
+// A limiter's own failure (a Redis timeout, say) is NOT this error and is
+// propagated unchanged, so a host can tell "too many attempts" from "the
+// limiter is down" — which want different status codes.
+var ErrRateLimited = ratelimit.ErrRateLimited
 
 // ErrWeakPassword is returned by Register, ChangePassword and ResetPassword
 // when Config.PasswordValidator rejects the new password. It is an alias for

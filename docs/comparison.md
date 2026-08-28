@@ -168,7 +168,7 @@ mutation, and that check — not the storage — is the part people get wrong.
 | **OIDC / SSO / SAML** | ✅ (plugins) | ❌ |
 | **Passkeys / WebAuthn** | ✅ (plugin) | ❌ |
 | **Magic link / email OTP** | ✅ (plugins) | ❌ |
-| **Built-in rate limiting** | ✅ | ❌ (lockout only) |
+| **Built-in rate limiting** | ✅ (per-path rules) | ✅ (port + in-memory bucket) *(was lockout only)* |
 | **Migrations / schema CLI** | ✅ | ❌ (reference `schema.sql`) |
 | **Typed client SDK** | ✅ | ❌ (out of scope, correctly) |
 | **Access-control model** | ✅ | ❌ (by design) |
@@ -185,7 +185,7 @@ This is where the concrete defects are, and where the gap is not a design choice
 | Password KDF | scrypt by default, `hash`/`verify` fully pluggable | argon2id by default, `crypto.Hasher` pluggable *(was bcrypt, hardcoded)* |
 | Password policy | configurable min/max length | composable validators, length by default *(was none)* |
 | Email normalisation | handled | **none** — `Alice@x.com` and `alice@x.com` become two accounts, or collide, depending on your store's collation |
-| Rate limiting | built in, per-path rules | none |
+| Rate limiting | built in, per-path rules | `ratelimit.Limiter` port *(was none)* |
 | Brute-force response | rate limit | account lock (see below) |
 | Token signing | HS256, RS256, EdDSA, JWKS endpoint | HS256, RS256, EdDSA, JWKS + verify-only keys *(was HS256 only)* |
 
@@ -354,8 +354,11 @@ rather than permanent, and is documented in the README.
 `TestThrottleLiftsWithoutOperatorAction`, `TestAdministrativeLockStillBlocksLogin`,
 `TestThrottleAppliesToUnknownAddresses`; `superuser/superuser_test.go`.
 
-**T0.9 (partial) — §2.7(f) reconciled** as a side effect of T0.3; §2.7(e) (device-code rate limiting)
-still open and still depends on T1.4.
+**T0.9 — both documentation/behaviour mismatches reconciled.** ✅ *Done.* §2.7(f) fell out of T0.3
+(the derived lockout is keyed by email, so it is genuinely evaluated before the user lookup, as the
+comment always claimed). §2.7(e) is closed by T1.4 below: `crypto/usercode.go` named rate limiting as
+the control its low entropy depends on without saying who supplies it, and `device.Config.RateLimiter`
+now supplies the half that only authit can.
 
 **T0.4 — Make password hashing pluggable, and default to argon2id.** ✅ *Done.* `crypto.Hasher`
 (`Hash`/`Verify`/`NeedsRehash`) with `crypto.Argon2idHasher` (the new default, OWASP minimum
@@ -469,8 +472,11 @@ defence in depth, and is documented as such.
 *Changed:* `jwt/signer.go`, `jwt/asymmetric.go` (new), `jwt/jwks.go` (new), `authithttp/validate.go`,
 `authhandlers/authhandlers.go`. *Tests:* `jwt/asymmetric_test.go`, `authithttp/authithttp_test.go`.
 
-**T0.9 (partial) — §2.7(f) reconciled** as a side effect of T0.3; §2.7(e) (device-code rate limiting)
-still open and still depends on T1.4.
+**T0.9 — both documentation/behaviour mismatches reconciled.** ✅ *Done.* §2.7(f) fell out of T0.3
+(the derived lockout is keyed by email, so it is genuinely evaluated before the user lookup, as the
+comment always claimed). §2.7(e) is closed by T1.4 below: `crypto/usercode.go` named rate limiting as
+the control its low entropy depends on without saying who supplies it, and `device.Config.RateLimiter`
+now supplies the half that only authit can.
 
 **T0.4 — Make password hashing pluggable, and default to argon2id.** ✅ *Done.* `crypto.Hasher`
 (`Hash`/`Verify`/`NeedsRehash`) with `crypto.Argon2idHasher` (the new default, OWASP minimum
@@ -586,10 +592,40 @@ order. The `device` group should implement RFC 8628's wire format exactly (`devi
 `user_code`, `verification_uri`, `interval`, and the `authorization_pending`/`slow_down` error
 bodies), since that is the part hosts will get wrong and it is fully specified.
 
-**T1.4 — A rate-limiting port.**
-`type RateLimiter interface { Allow(ctx context.Context, key string) error }` on each service's
-`Config`, nil-safe. Ship an in-memory token bucket; document a Redis shape. Key by IP and route, not
-by email — that is the dimension T0.1 removes from the lockout.
+**T1.4 — A rate-limiting port.** ✅ *Done.* New `ratelimit` package: `Limiter` (one method),
+`Noop`, `ErrRateLimited`, a `RetryAfter` hint, and `NewMemory` — an in-process token bucket with a
+bounded keyspace. Wired into `user` (login, 2FA, password reset, email verification), `superuser`
+(login) and `device` (user-code guessing, which closes T0.9).
+
+The framing changed while implementing it. The original sketch said "key by IP and route, not just
+email" — but a service method sees only its arguments, and half of them have no IP at all
+(`RequestPasswordReset(ctx, email)` never will). Shipping a service-layer limiter that claimed to be
+per-IP would have been a lie for those paths. So the package documents itself as explicitly *not* a
+replacement for HTTP middleware, and covers only what middleware cannot reach:
+
+- **Refusing before the KDF.** This became the strongest argument for the port existing at all, and it
+  is a consequence of T0.4: Argon2id costs 19 MiB and real CPU per attempt, so an unauthenticated
+  flood is resource exhaustion regardless of whether a password is ever guessed. Making passwords
+  properly expensive to verify created a denial-of-service surface, and this is what closes it.
+- **Device user codes** (T0.9) — the lookup is inside `device`, so nothing outside can charge for it.
+- **Mail-sending endpoints**, keyed by address so an unregistered one behaves identically and the
+  limit cannot be used to probe for accounts.
+
+Three details worth recording:
+
+- **A limiter fault is not a refusal.** A Redis timeout propagates unchanged rather than being folded
+  into `ErrRateLimited`; "too many attempts" and "the limiter is down" want different status codes.
+- **Keys carry the normalised email**, or varying case would buy a fresh budget — the same bug T0.6
+  fixed for the lockout counter, and it would have reappeared here.
+- **`Memory` bounds its own keyspace.** A limiter that grows a map per distinct key is itself a
+  memory-exhaustion vector, since the attacker picks the key. Eviction drops only fully-refilled
+  buckets, which is lossless — a full bucket permits exactly what an absent one does — so flooding
+  with junk keys cannot evict and thereby reset a bucket that is actively limiting someone.
+
+*Changed:* `ratelimit/` (new), `user/config.go`, `user/errors.go`, `user/register_login.go`,
+`user/twofactor.go`, `user/password.go`, `user/email_verification.go`, `superuser/*`, `device/*`,
+`crypto/usercode.go`. *Tests:* `ratelimit/ratelimit_test.go` (including `-race`),
+`user/ratelimit_test.go`, `device/ratelimit_test.go`, `superuser/superuser_test.go`.
 
 **T1.5 — Cookie helpers in `authithttp`.**
 `SetRefreshCookie(w, token, opts)` / `ClearRefreshCookie(w)` with `HttpOnly`, `Secure`, `SameSite`,

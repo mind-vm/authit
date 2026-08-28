@@ -3,10 +3,12 @@ package user
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/mind-vm/authit/audit"
 	authitcrypto "github.com/mind-vm/authit/crypto"
+	"github.com/mind-vm/authit/ratelimit"
 	"github.com/mind-vm/authit/store"
 )
 
@@ -60,6 +62,15 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 	// failed-login counter -- which is keyed by email -- agree. If they
 	// disagreed, varying the case would reset the throttle.
 	email = store.NormalizeEmail(email)
+
+	// Consulted before anything expensive happens. The lockout below is
+	// account-scoped and only bites after several failures; this bites
+	// first and is scoped to the source address too, which is what keeps
+	// an attacker from making the server run Argon2id thousands of times.
+	if err := s.limit(ctx, "login:ip:"+ipAddress, "login:email:"+email); err != nil {
+		s.auditRateLimited(ctx, audit.EventUserLoginFailed, "", email, userAgent, ipAddress)
+		return AuthResult{}, err
+	}
 
 	locked, u, err := s.checkLockoutAndFetchUser(ctx, email)
 	if err != nil {
@@ -133,6 +144,45 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		ActorID: u.ID, Email: u.Email, UserAgent: userAgent, IPAddress: ipAddress,
 	})
 	return AuthResult{User: *u, Tokens: &tokens}, nil
+}
+
+// limit consults the configured rate limiter for each key in turn,
+// skipping any whose value ends in an empty component -- an absent IP
+// address must not collapse every caller into one shared bucket.
+//
+// Every key is consulted even though the first refusal returns, so budget
+// is charged consistently: an attacker cannot exhaust one dimension and
+// leave another untouched by racing.
+func (s *Service) limit(ctx context.Context, keys ...string) error {
+	var refusal error
+	for _, key := range keys {
+		if strings.HasSuffix(key, ":") {
+			continue
+		}
+		if err := s.cfg.RateLimiter.Allow(ctx, key); err != nil {
+			if !errors.Is(err, ratelimit.ErrRateLimited) {
+				// The limiter itself failed. Fail closed rather than
+				// silently removing the control, and report it as its own
+				// error so a host can distinguish it from a refusal.
+				return err
+			}
+			if refusal == nil {
+				refusal = err
+			}
+		}
+	}
+	return refusal
+}
+
+// auditRateLimited records a refusal. It is a denial, not a credential
+// failure, so it is logged as one -- an operator reading the trail should
+// be able to tell "wrong password" from "too many attempts".
+func (s *Service) auditRateLimited(ctx context.Context, t audit.EventType, actorID, email, userAgent, ipAddress string) {
+	s.audit.Log(ctx, audit.Event{
+		Type: t, Result: audit.ResultDenied, ActorID: actorID, Email: email,
+		UserAgent: userAgent, IPAddress: ipAddress,
+		Metadata: map[string]any{"reason": "rate_limited"},
+	})
 }
 
 // throttled reports whether email is currently in temporary lockout:

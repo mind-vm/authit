@@ -11,8 +11,15 @@ const userCodeAlphabet = "BCDFGHJKLMNPQRSTVWXZ"
 // GenerateUserCode returns an 8-character device-flow user code formatted
 // as "XXXX-XXXX" (RFC 8628 §6.1's recommended shape), e.g. "WDJB-MJHT".
 // At ~34.5 bits of entropy it is deliberately low relative to the
-// device_code — the security property comes from rate-limiting guesses at
-// the verification endpoint, not from the code's entropy alone.
+// device_code — the security property comes from rate-limiting guesses, not
+// from the code's entropy alone (RFC 8628 §5.2).
+//
+// authit supplies half of that limit itself: device.Config.RateLimiter
+// bounds failed user-code lookups, which is the part a host cannot
+// implement from outside because the lookup happens inside the device
+// package. Set it. The other half — per-IP limiting on whatever route you
+// expose the verification form at — is still yours, and this comment used
+// to name a requirement without saying where either half came from.
 func GenerateUserCode() (string, error) {
 	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {

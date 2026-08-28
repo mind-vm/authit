@@ -3,11 +3,13 @@ package superuser
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mind-vm/authit/audit"
 	authitcrypto "github.com/mind-vm/authit/crypto"
+	"github.com/mind-vm/authit/ratelimit"
 	"github.com/mind-vm/authit/store"
 )
 
@@ -17,6 +19,15 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 	// Normalised once so the account lookup and the email-keyed
 	// failed-login counter agree; see store.NormalizeEmail.
 	email = store.NormalizeEmail(email)
+
+	if err := s.limit(ctx, "superuser-login:ip:"+ipAddress, "superuser-login:email:"+email); err != nil {
+		s.audit.Log(ctx, audit.Event{
+			Type: audit.EventSuperuserLoginFailed, Result: audit.ResultDenied,
+			Email: email, UserAgent: userAgent, IPAddress: ipAddress,
+			Metadata: map[string]any{"reason": "rate_limited"},
+		})
+		return TokenPair{}, err
+	}
 
 	// Checked before the account lookup, and keyed by email, so an unknown
 	// address and a throttled one behave identically.
@@ -101,6 +112,26 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		ActorID: su.ID, Email: su.Email, UserAgent: userAgent, IPAddress: ipAddress,
 	})
 	return tokens, nil
+}
+
+// limit consults the rate limiter for each key, skipping any with an empty
+// trailing component. See the user plane's equivalent for the reasoning.
+func (s *Service) limit(ctx context.Context, keys ...string) error {
+	var refusal error
+	for _, key := range keys {
+		if strings.HasSuffix(key, ":") {
+			continue
+		}
+		if err := s.cfg.RateLimiter.Allow(ctx, key); err != nil {
+			if !errors.Is(err, ratelimit.ErrRateLimited) {
+				return err
+			}
+			if refusal == nil {
+				refusal = err
+			}
+		}
+	}
+	return refusal
 }
 
 // throttled reports whether email is in temporary lockout:

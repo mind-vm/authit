@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mind-vm/authit/audit"
+	"github.com/mind-vm/authit/ratelimit"
 	"github.com/mind-vm/authit/store"
 )
 
@@ -46,6 +47,30 @@ type Config struct {
 	// AuditLogger receives security-relevant events (approval, denial).
 	// Nil means events are not recorded — see package audit.
 	AuditLogger audit.Logger
+	// RateLimiter bounds guessing at user codes. Nil means ratelimit.Noop.
+	//
+	// Setting this is not optional in the way the other nil-safe fields
+	// are. A user code carries about 34.5 bits (crypto.GenerateUserCode),
+	// which is deliberately low so a human can read it off one screen and
+	// type it into another — RFC 8628 §5.2 is explicit that the security
+	// of that choice rests on rate-limiting guesses at the verification
+	// endpoint. With no limiter, an attacker who can call
+	// ApproveDeviceAuthorization or DenyDeviceAuthorization in a loop can
+	// search for a pending code.
+	//
+	// Keys:
+	//
+	//	device:approve:<caller user id>  per authenticated caller
+	//	device:user-code:failures        global, charged on a failed lookup
+	//
+	// The global key is charged only when a lookup FAILS, so ordinary use
+	// never consumes it and an enumeration sweep exhausts it almost
+	// immediately. The trade is real and worth stating: an attacker who
+	// burns that budget also stops legitimate users from entering a code
+	// until it refills. Size Burst for your traffic — a nuisance outage on
+	// one flow is the better end of this trade against an exhaustible
+	// 34.5-bit space, but it is a trade.
+	RateLimiter ratelimit.Limiter
 }
 
 func (c Config) withDefaults() Config {
@@ -57,6 +82,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.SlowDownIncrement <= 0 {
 		c.SlowDownIncrement = 5 * time.Second
+	}
+	if c.RateLimiter == nil {
+		c.RateLimiter = ratelimit.Noop{}
 	}
 	return c
 }

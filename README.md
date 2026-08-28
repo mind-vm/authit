@@ -252,13 +252,35 @@ Two properties are worth knowing, because both were bugs once:
 - **The second factor shares the counter.** A correct password does *not* reset it — only a fully completed login does, which means `VerifyTwoFactorLogin` too. An attacker holding a valid password therefore gets `MaxFailedLoginAttempts` guesses at the TOTP code per window, not unlimited guesses, and cannot re-run `Authenticate` to mint a fresh pending session to escape it.
 - **Failed logins never lock an account permanently.** `LockoutStore.LockAccount` is not called by authit at all; it is an operator-driven administrative lock, and `Authenticate` honours it, but only your own code sets it.
 
-Per-IP rate limiting is still yours: the lockout is account-scoped by design (so a distributed attack is still caught), which means an attacker who knows an address can trigger a *temporary* denial of service against it. Put a rate limiter in front of your login route.
+The lockout is account-scoped by design, so a distributed attack is still caught — but it also means an attacker who knows an address can trigger a *temporary* denial of service against it. Rate limiting (below) is the complementary control.
+
+## Rate limiting
+
+`ratelimit.Limiter` is one method, `Allow(ctx, key) error`. `ratelimit.NewMemory` is an in-process token bucket for a single instance; implement the interface over Redis when you scale horizontally, since N processes otherwise permit N times the rate.
+
+```go
+limiter := ratelimit.NewMemory(ratelimit.MemoryConfig{Burst: 5, Interval: time.Minute})
+
+user.Config{RateLimiter: limiter}
+superuser.Config{RateLimiter: limiter}
+device.Config{RateLimiter: limiter} // see below — set this one
+```
+
+**This does not replace rate limiting in your HTTP middleware, and cannot.** A service method sees only its arguments: some have an IP, some only an email, none see routes or headers. Per-route, per-IP limiting belongs in middleware. What this port covers is the part middleware cannot reach:
+
+- **Refusing before the password KDF runs.** Argon2id costs 19 MiB and real CPU per attempt, so an unauthenticated flood is a resource-exhaustion vector whether or not any password is ever guessed. `Authenticate` consults the limiter first, before the account lookup and long before the hash comparison.
+- **Bounding device user-code guesses.** A user code carries ~34.5 bits so a human can retype it, and RFC 8628 §5.2 rests the security of that on limiting guesses. The lookup happens inside `device`, so only `device` can charge for it. **Set `device.Config.RateLimiter`** — the doc comment on it explains the one trade-off (an attacker who burns the global failure budget also delays legitimate code entry until it refills).
+- **Bounding "send this address an email" endpoints**, keyed by address so an unregistered one is treated identically and the limit cannot be used to probe for accounts.
+
+Keys are documented on each `Config`'s `RateLimiter` field. Refusals wrap `ratelimit.ErrRateLimited` (aliased as `user.ErrRateLimited` and friends) and carry a hint via `ratelimit.RetryAfter` for a `Retry-After` header. A limiter's *own* failure — a Redis timeout — is propagated unchanged instead, so "too many attempts" and "the limiter is down" stay distinguishable; they want different status codes.
+
+Leaving the field nil disables the control rather than breaking, the same shape as `AuditLogger`.
 
 ## Status
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: there is no request rate limiting, which the device-authorization flow in particular assumes you supply; and there is no transaction boundary in the `store` ports, so multi-write flows are not atomic. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: there is no transaction boundary in the `store` ports, so multi-write flows are not atomic. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 

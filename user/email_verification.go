@@ -13,6 +13,10 @@ import (
 // RequestEmailVerification generates a verification token for userID and
 // emails it.
 func (s *Service) RequestEmailVerification(ctx context.Context, userID string) error {
+	// Authenticated, but still a "send this address an email" button.
+	if err := s.limit(ctx, "email-verification:user:"+userID); err != nil {
+		return err
+	}
 	u, err := s.stores.Users.GetUserByID(ctx, userID)
 	if err != nil {
 		return err
@@ -25,7 +29,11 @@ func (s *Service) RequestEmailVerification(ctx context.Context, userID string) e
 // it always succeeds regardless of whether the address is registered or
 // already verified, to avoid leaking account existence.
 func (s *Service) RequestEmailVerificationByEmail(ctx context.Context, email string) error {
-	u, err := s.stores.Users.GetUserByEmail(ctx, store.NormalizeEmail(email))
+	email = store.NormalizeEmail(email)
+	if err := s.limit(ctx, "email-verification:email:"+email); err != nil {
+		return err
+	}
+	u, err := s.stores.Users.GetUserByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil

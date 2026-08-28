@@ -8,6 +8,7 @@ import (
 	"github.com/mind-vm/authit/audit"
 	authitcrypto "github.com/mind-vm/authit/crypto"
 	authitjwt "github.com/mind-vm/authit/jwt"
+	"github.com/mind-vm/authit/ratelimit"
 	"github.com/mind-vm/authit/store"
 )
 
@@ -50,6 +51,12 @@ type Config struct {
 	// Consider a stricter policy here than on the user plane: these
 	// accounts can impersonate.
 	PasswordValidator authitcrypto.PasswordValidator
+	// RateLimiter throttles Authenticate before the password KDF runs.
+	// Nil means ratelimit.Noop. Keys:
+	//
+	//	superuser-login:ip:<ip>        per source address
+	//	superuser-login:email:<email>  per account, normalised
+	RateLimiter ratelimit.Limiter
 }
 
 func (c Config) withDefaults() Config {
@@ -76,6 +83,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.PasswordValidator == nil {
 		c.PasswordValidator = authitcrypto.DefaultPasswordPolicy()
+	}
+	if c.RateLimiter == nil {
+		c.RateLimiter = ratelimit.Noop{}
 	}
 	return c
 }
