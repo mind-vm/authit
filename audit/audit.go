@@ -66,6 +66,13 @@ const (
 	EventPasskeyLogin        EventType = "user.passkey.login"
 	EventPasskeyCloneWarning EventType = "user.passkey.clone_warning"
 
+	// Passwordless email sign-in. EventEmailLoginExhausted means a code
+	// was destroyed by too many wrong guesses, which is an attack in
+	// progress far more often than it is a typo.
+	EventEmailLoginRequested EventType = "user.email_login.requested"
+	EventEmailLoginSucceeded EventType = "user.email_login.succeeded"
+	EventEmailLoginExhausted EventType = "user.email_login.exhausted"
+
 	EventAccountLinked   EventType = "user.account.linked"
 	EventAccountUnlinked EventType = "user.account.unlinked"
 

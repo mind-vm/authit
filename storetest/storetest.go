@@ -106,6 +106,7 @@ type Stores struct {
 	SuperuserTokens    func(*testing.T) store.SuperuserRefreshTokenStore
 	Accounts           func(*testing.T) store.AccountStore
 	WebAuthn           func(*testing.T) store.WebAuthnCredentialStore
+	EmailLogins        func(*testing.T) store.EmailLoginStore
 }
 
 // RunAll runs every suite for which a factory was supplied.
@@ -158,6 +159,9 @@ func RunAll(t *testing.T, s Stores) {
 	}
 	if s.WebAuthn != nil {
 		t.Run("WebAuthnCredentialStore", func(t *testing.T) { RunWebAuthnCredentialStore(t, s.WebAuthn, s.Fixtures) })
+	}
+	if s.EmailLogins != nil {
+		t.Run("EmailLoginStore", func(t *testing.T) { RunEmailLoginStore(t, s.EmailLogins, s.Fixtures) })
 	}
 }
 

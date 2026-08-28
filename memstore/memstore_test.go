@@ -40,5 +40,6 @@ func TestMemstoreConformance(t *testing.T) {
 		WebAuthn: func(*testing.T) store.WebAuthnCredentialStore {
 			return memstore.NewWebAuthnCredentialStore()
 		},
+		EmailLogins: func(*testing.T) store.EmailLoginStore { return memstore.NewEmailLoginStore() },
 	})
 }

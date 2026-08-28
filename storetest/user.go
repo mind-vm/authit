@@ -263,3 +263,101 @@ func RunEmailVerificationStore(t *testing.T, newStore func(*testing.T) store.Ema
 		}
 	})
 }
+
+// RunEmailLoginStore checks store.EmailLoginStore.
+func RunEmailLoginStore(t *testing.T, newStore func(*testing.T) store.EmailLoginStore, fx Fixtures) {
+	mk := func(rowID, email, hash string, kind store.EmailLoginKind, ttl time.Duration) *store.EmailLoginToken {
+		return &store.EmailLoginToken{
+			ID: rowID, Email: email, Kind: kind, TokenHash: hash,
+			ExpiresAt: time.Now().Add(ttl), CreatedAt: time.Now(),
+		}
+	}
+
+	t.Run("missing rows report ErrNotFound", func(t *testing.T) {
+		s := newStore(t)
+		_, err := s.GetEmailLoginTokenByHash(ctx(), "no-such-hash")
+		requireNotFound(t, "GetEmailLoginTokenByHash", err)
+		_, err = s.GetEmailLoginTokenByEmail(ctx(), "nobody@example.com", store.EmailLoginCode)
+		requireNotFound(t, "GetEmailLoginTokenByEmail", err)
+	})
+
+	t.Run("lookup by email is scoped to the kind", func(t *testing.T) {
+		// The kinds are separated because the code path counts guesses and
+		// the link path does not. A lookup that ignored the kind could
+		// hand a low-entropy code to the path with no attempt limit.
+		s := newStore(t)
+		requireNoError(t, "create", s.CreateEmailLoginToken(ctx(), mk(id(51), "a@example.com", "h-link", store.EmailLoginLink, time.Hour)))
+		requireNoError(t, "create", s.CreateEmailLoginToken(ctx(), mk(id(52), "a@example.com", "h-code", store.EmailLoginCode, time.Hour)))
+
+		got, err := s.GetEmailLoginTokenByEmail(ctx(), "a@example.com", store.EmailLoginCode)
+		requireNoError(t, "GetEmailLoginTokenByEmail", err)
+		if got.Kind != store.EmailLoginCode || got.TokenHash != "h-code" {
+			t.Fatalf("got %+v, want the code token", got)
+		}
+	})
+
+	t.Run("lookup by email is scoped to the address", func(t *testing.T) {
+		s := newStore(t)
+		requireNoError(t, "create", s.CreateEmailLoginToken(ctx(), mk(id(51), "a@example.com", "h-a", store.EmailLoginCode, time.Hour)))
+		requireNoError(t, "create", s.CreateEmailLoginToken(ctx(), mk(id(52), "b@example.com", "h-b", store.EmailLoginCode, time.Hour)))
+
+		got, err := s.GetEmailLoginTokenByEmail(ctx(), "b@example.com", store.EmailLoginCode)
+		requireNoError(t, "GetEmailLoginTokenByEmail", err)
+		if got.TokenHash != "h-b" {
+			t.Fatalf("got %q, want b's token: a code must never resolve for another address", got.TokenHash)
+		}
+	})
+
+	t.Run("attempt counts persist", func(t *testing.T) {
+		// A six-digit code survives only because wrong guesses are
+		// counted. An update that does not stick means the counter is
+		// always zero and the code is guessable without limit.
+		s := newStore(t)
+		tok := mk(id(51), "a@example.com", "h", store.EmailLoginCode, time.Hour)
+		requireNoError(t, "create", s.CreateEmailLoginToken(ctx(), tok))
+
+		tok.Attempts = 3
+		requireNoError(t, "UpdateEmailLoginToken", s.UpdateEmailLoginToken(ctx(), tok))
+		got, err := s.GetEmailLoginTokenByEmail(ctx(), "a@example.com", store.EmailLoginCode)
+		requireNoError(t, "GetEmailLoginTokenByEmail", err)
+		if got.Attempts != 3 {
+			t.Fatalf("Attempts = %d, want 3; without this the guess limit does nothing", got.Attempts)
+		}
+	})
+
+	t.Run("used tokens are still returned", func(t *testing.T) {
+		s := newStore(t)
+		tok := mk(id(51), "a@example.com", "h", store.EmailLoginLink, time.Hour)
+		requireNoError(t, "create", s.CreateEmailLoginToken(ctx(), tok))
+		used := time.Now()
+		tok.UsedAt = &used
+		requireNoError(t, "update", s.UpdateEmailLoginToken(ctx(), tok))
+
+		got, err := s.GetEmailLoginTokenByHash(ctx(), "h")
+		requireNoError(t, "GetEmailLoginTokenByHash after use", err)
+		if got.UsedAt == nil {
+			t.Fatal("UsedAt did not persist; the service reads it to enforce single use")
+		}
+	})
+
+	t.Run("delete is scoped to one address and kind", func(t *testing.T) {
+		// Requesting a new credential deletes the old one, so that two
+		// live codes never halve the work of guessing. It must not take
+		// anybody else's with it.
+		s := newStore(t)
+		requireNoError(t, "create", s.CreateEmailLoginToken(ctx(), mk(id(51), "a@example.com", "h-a-code", store.EmailLoginCode, time.Hour)))
+		requireNoError(t, "create", s.CreateEmailLoginToken(ctx(), mk(id(52), "a@example.com", "h-a-link", store.EmailLoginLink, time.Hour)))
+		requireNoError(t, "create", s.CreateEmailLoginToken(ctx(), mk(id(53), "b@example.com", "h-b-code", store.EmailLoginCode, time.Hour)))
+
+		requireNoError(t, "delete", s.DeleteEmailLoginTokens(ctx(), "a@example.com", store.EmailLoginCode))
+
+		_, err := s.GetEmailLoginTokenByHash(ctx(), "h-a-code")
+		requireNotFound(t, "the deleted code", err)
+		if _, err := s.GetEmailLoginTokenByHash(ctx(), "h-a-link"); err != nil {
+			t.Fatalf("the same address's link must survive: %v", err)
+		}
+		if _, err := s.GetEmailLoginTokenByHash(ctx(), "h-b-code"); err != nil {
+			t.Fatalf("another address's code must survive: %v", err)
+		}
+	})
+}

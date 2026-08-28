@@ -36,3 +36,42 @@ func GenerateUserCode() (string, error) {
 	out[4] = '-'
 	return string(out), nil
 }
+
+// GenerateNumericCode returns a cryptographically random decimal string of
+// exactly n digits, leading zeros included.
+//
+// It draws uniformly. The obvious implementation -- read a byte and take it
+// modulo 10 -- is biased: 256 is not a multiple of 10, so 0 through 5 come
+// up slightly more often than 6 through 9. Over a six-digit code that is
+// not a break on its own, but it shrinks the search an attacker has to do,
+// and there is no reason to accept it when rejection sampling costs a loop.
+//
+// A code this short is only safe behind a strict attempt limit; see
+// emaillogin.Config.MaxCodeAttempts for what that has to look like.
+func GenerateNumericCode(n int) (string, error) {
+	if n <= 0 {
+		return "", nil
+	}
+	const digits = "0123456789"
+	// The largest multiple of 10 that fits in a byte. Values at or above
+	// it are discarded rather than folded, which is what removes the bias.
+	const limit = 250
+
+	out := make([]byte, 0, n)
+	buf := make([]byte, n)
+	for len(out) < n {
+		if _, err := rand.Read(buf); err != nil {
+			return "", err
+		}
+		for _, b := range buf {
+			if b >= limit {
+				continue
+			}
+			out = append(out, digits[b%10])
+			if len(out) == n {
+				break
+			}
+		}
+	}
+	return string(out), nil
+}

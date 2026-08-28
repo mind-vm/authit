@@ -167,7 +167,7 @@ mutation, and that check — not the storage — is the part people get wrong.
 | **Social / OAuth login** | ✅ | ✅ (`oidc`) *(was out of scope)* |
 | **OIDC / SSO / SAML** | ✅ (plugins) | partial — any OAuth 2.0/OIDC provider; no SAML |
 | **Passkeys / WebAuthn** | ✅ (plugin) | ✅ (`passkey`) *(was absent)* |
-| **Magic link / email OTP** | ✅ (plugins) | ❌ |
+| **Magic link / email OTP** | ✅ (plugins) | ✅ (`emaillogin`) *(was absent)* |
 | **Built-in rate limiting** | ✅ (per-path rules) | ✅ (port + in-memory bucket) *(was lockout only)* |
 | **Migrations / schema CLI** | ✅ | ❌ (reference `schema.sql`) |
 | **Typed client SDK** | ✅ | ❌ (out of scope, correctly) |
@@ -899,9 +899,44 @@ group and no `sqlbstore` adapter.
 *Tests:* `passkey/` — against a virtual authenticator that holds an ES256 key and signs for real,
 since every property worth checking is downstream of a signature actually verifying.
 
-**T2.3 — Magic link and email OTP.** Cheapest features on this list: `crypto` already generates and
-hashes opaque tokens, `EmailSender` already exists, and the token lifecycle is the same shape as
-`EmailVerificationToken`.
+**T2.3 — Magic link and email OTP.** ✅ *Done.* New `emaillogin` package, new
+`store.EmailLoginStore` port, `crypto.GenerateNumericCode`. This document called it the cheapest
+feature on the list, and the plumbing was — but the code half is the T0.1 lesson again, and that part
+was not cheap to get right.
+
+**A six-digit code is a credential with twenty bits of entropy.** It survives only because of the
+limit on guessing it, so that limit is the design:
+
+- `MaxCodeAttempts` **destroys** the code rather than refusing the attempt. A counter that only gated
+  would leave it live for the next request, and the budget is the point.
+- **Requesting a new code deletes the old.** Ten live codes make guessing ten times easier and an
+  attacker can ask for as many as they like — the same shape as the pending-2FA-session escape hatch
+  T0.1 had to close.
+- The code is hashed **with the address**, because six digits are not unique: two accounts can hold
+  the same code simultaneously, and hashing the code alone would make one person's redeemable by
+  another.
+- A code cannot be redeemed through the link path, which does not count guesses.
+
+**Accounts are created on redemption, never on request.** Creating one when the link is requested
+would let anybody fill a user table with addresses they do not control by typing them into a form.
+Redemption proves inbox control — which is also why the address arrives verified, with no second
+confirmation email asking the user to prove what they just proved.
+
+Every failure is one `ErrInvalidToken`: distinguishing "expired" from "wrong" says whether the code
+was ever real, and request always succeeds regardless of whether the address is registered, with
+`ErrSignUpDisabled` surfacing at redemption where only the inbox owner sees it.
+
+*A test that could not fail, caught and fixed.* `crypto.GenerateNumericCode` uses rejection sampling,
+because `b % 10` over a random byte over-produces digits 0–5 by about 4% — 256 is not a multiple of
+10. The first distribution test used 60,000 digits and a 5% tolerance, and **passed against a
+deliberately biased implementation**: the bias is roughly 1.6 standard deviations at that sample size.
+Resized to a million digits with a 1% threshold, where the bias is about six standard deviations, it
+now fails against the biased version as it should. A test that does not catch its own regression is
+worse than no test, and this one did not until it was made to.
+
+*Changed:* `emaillogin/` (new), `store/emaillogin.go` (new), `memstore/emaillogin.go` (new),
+`crypto/usercode.go`, `storetest/user.go`, `audit/audit.go`, `schema.sql`.
+*Tests:* `emaillogin/emaillogin_test.go`, `crypto/numericcode_test.go`.
 
 **T2.4 — Optional server-side sessions.** `store.SessionStore` plus
 `user.Config.SessionMode` (`SessionModeJWT` default, `SessionModeOpaque`). Opaque mode issues a

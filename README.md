@@ -31,6 +31,7 @@ authit was designed by studying two existing implementations (a full-featured bu
 | `device` | RFC 8628 OAuth 2.0 Device Authorization Grant — "visit this URL, enter this code" CLI login |
 | `oidc` | Sign-in with an external identity provider (Google, GitHub, your SSO) |
 | `passkey` | WebAuthn — passkeys, Touch ID, security keys — as a second factor or a primary one |
+| `emaillogin` | Passwordless sign-in: magic links and short email codes |
 | `authithttp` | The only HTTP wiring authit ships: RFC-correct bearer-token extraction, validation, and 401-vs-500 classification |
 | `audit` | Opt-in security-event logging (`Logger`, `Event`, `NoopLogger`, `SlogLogger`) — every service's `Config` carries a nil-safe `AuditLogger` |
 
@@ -313,6 +314,31 @@ Three things `store/*.go` will not tell you, and the reason the reference exists
 - **Email delivery.** `user.EmailSender` is an interface; bring your own SMTP/API client.
 - **Social/OAuth login, RBAC policy engines.** Out of scope for now; `team.Role` and `store.Member.Role` are plain strings you can extend.
 
+## Passwordless email sign-in (`emaillogin`)
+
+Magic links and short sign-in codes. Both prove one thing — that whoever completes them can read mail sent to that address — and both are request/deliver/redeem:
+
+```go
+svc, _ := emaillogin.NewService(emaillogin.Stores{Users: users, Tokens: tokens}, mySender, emaillogin.Config{})
+
+_ = svc.RequestMagicLink(ctx, email)          // emails a link
+res, err := svc.RedeemMagicLink(ctx, token)   // res.User is the account
+
+_ = svc.RequestSignInCode(ctx, email)                 // emails 6 digits
+res, err := svc.RedeemSignInCode(ctx, email, code)
+```
+
+They differ in exactly one way that matters: **entropy**. A magic link carries 256 bits, so guessing is not a threat. A six-digit code carries about twenty, and is only as safe as the limit on how many times it can be guessed. That limit is the whole flow:
+
+- `MaxCodeAttempts` (5 by default) destroys the code, not merely the attempt. A counter that only gated would leave the code live for the next request.
+- **Requesting a new code deletes the old one.** Ten live codes make guessing ten times easier, and an attacker can ask for as many as they like.
+- A code is hashed **together with the address**, so it is only ever valid for the inbox it was sent to — six digits are not unique, and two accounts can hold the same code at the same moment.
+- A code cannot be redeemed through the link path, which does not count guesses.
+
+**Accounts are created on redemption, never on request.** Creating one when the link is asked for would let anybody fill your user table with addresses they do not control, just by typing them into a form. Delivering to the inbox and getting the token back is what proves control — and it also means the address arrives already verified, so there is no second confirmation email asking the user to prove what they just proved.
+
+Request always reports success whether or not the address is registered; `ErrSignUpDisabled` surfaces at redemption, where only the inbox owner sees it. Every failure mode — wrong, expired, used, exhausted — is one `ErrInvalidToken`, because distinguishing them tells an attacker whether the code they tried was ever real.
+
 ## Passkeys (`passkey`)
 
 `passkey` adds WebAuthn, both as a second factor behind a password and as a primary credential that replaces one.
@@ -484,7 +510,7 @@ Leaving the field nil disables the control rather than breaking, the same shape 
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does); and neither `oidc` nor `passkey` ships an HTTP route group, so those handlers are yours. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does); and `oidc`, `passkey` and `emaillogin` ship no HTTP route groups, so those handlers are yours. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 

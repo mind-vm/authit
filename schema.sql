@@ -225,6 +225,31 @@ CREATE TABLE webauthn_credentials (
 );
 CREATE INDEX webauthn_credentials_user_id_idx ON webauthn_credentials (user_id);
 
+-- store.EmailLoginStore / store.EmailLoginToken -- magic links and sign-in
+-- codes (emaillogin package). Absent from the user plane above because a
+-- password-only deployment needs none of it.
+--
+-- Keyed by email, not user_id, and with no foreign key: the account may not
+-- exist yet. A passwordless flow can create one, and it does so when the
+-- token is redeemed rather than when it is requested, so that nobody can
+-- fill the user table with addresses they do not control.
+--
+-- attempts is what makes a six-digit code survivable. The index on
+-- (email, kind) is the one a code redemption uses to find the record it must
+-- count a failed guess against -- a lookup by token hash cannot work for a
+-- guess that did not match.
+CREATE TABLE email_login_tokens (
+    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    email      text        NOT NULL,
+    kind       text        NOT NULL,
+    token_hash text        NOT NULL UNIQUE,
+    attempts   integer     NOT NULL DEFAULT 0,
+    expires_at timestamptz NOT NULL,
+    used_at    timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX email_login_tokens_email_kind_idx ON email_login_tokens (email, kind);
+
 -- ---------------------------------------------------------------------------
 -- team plane -- team.Stores
 -- ---------------------------------------------------------------------------
