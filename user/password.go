@@ -122,13 +122,21 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword strin
 	}
 	u.PasswordHash = hash
 	u.UpdatedAt = time.Now()
-	if err := s.stores.Users.UpdateUser(ctx, u); err != nil {
-		return err
-	}
-	if err := s.stores.PasswordResets.MarkPasswordResetTokenUsed(ctx, t.ID); err != nil {
-		return err
-	}
-	if err := s.stores.RefreshTokens.RevokeAllUserRefreshTokens(ctx, u.ID); err != nil {
+
+	// Three writes that must land together. Setting the password without
+	// consuming the token leaves a live reset link in an inbox; consuming
+	// it without revoking sessions leaves whoever prompted the reset still
+	// signed in, which is usually the reason it was requested.
+	err = store.RunInTx(ctx, s.stores.Tx, func(ctx context.Context) error {
+		if err := s.stores.Users.UpdateUser(ctx, u); err != nil {
+			return err
+		}
+		if err := s.stores.PasswordResets.MarkPasswordResetTokenUsed(ctx, t.ID); err != nil {
+			return err
+		}
+		return s.stores.RefreshTokens.RevokeAllUserRefreshTokens(ctx, u.ID)
+	})
+	if err != nil {
 		return err
 	}
 	s.audit.Log(ctx, audit.Event{Type: audit.EventUserPasswordReset, Result: audit.ResultSuccess, ActorID: u.ID, Email: u.Email})

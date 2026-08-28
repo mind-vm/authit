@@ -254,13 +254,14 @@ func (s *Service) VerifyTwoFactorLogin(ctx context.Context, pendingToken, code, 
 		return AuthResult{}, err
 	}
 	valid := authitcrypto.ValidateTOTPCode(secret, code)
+	usedBackupCode := false
 	if !valid && consumeBackupCode(settings, code) {
-		valid = true
-		if err := s.stores.TOTP.UpdateTOTPSettings(ctx, settings); err != nil {
-			return AuthResult{}, err
-		}
+		valid, usedBackupCode = true, true
 	}
 	if !valid {
+		// Recording the failure happens here, outside any transaction: the
+		// call returns an error, and a rollback would erase the very
+		// attempt the rate limit is counting.
 		s.recordFailedLogin(ctx, u.Email, ipAddress)
 		s.audit.Log(ctx, audit.Event{
 			Type: audit.EventUserLoginFailed, Result: audit.ResultFailure, ActorID: pending.UserID,
@@ -269,15 +270,34 @@ func (s *Service) VerifyTwoFactorLogin(ctx context.Context, pendingToken, code, 
 		return AuthResult{}, ErrInvalidTwoFactor
 	}
 
-	_ = s.stores.PendingTwoFactor.DeletePendingTwoFactorSession(ctx, pending.ID)
-	// Both factors are now satisfied -- this is the point at which the
-	// login has actually succeeded, so this is where the counter resets.
-	_ = s.stores.Lockouts.ClearFailedLoginAttempts(ctx, u.Email)
-
-	tokens, err := s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
+	// Consuming a backup code, retiring the pending session and issuing the
+	// tokens must land together. If the code were marked used but the login
+	// then failed, the user would have spent a single-use recovery code and
+	// got nothing for it -- at the exact moment they are already locked out
+	// of their second factor.
+	var tokens TokenPair
+	err = store.RunInTx(ctx, s.stores.Tx, func(ctx context.Context) error {
+		if usedBackupCode {
+			if err := s.stores.TOTP.UpdateTOTPSettings(ctx, settings); err != nil {
+				return err
+			}
+		}
+		if err := s.stores.PendingTwoFactor.DeletePendingTwoFactorSession(ctx, pending.ID); err != nil {
+			return err
+		}
+		var err error
+		tokens, err = s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
+		return err
+	})
 	if err != nil {
 		return AuthResult{}, err
 	}
+
+	// Both factors are now satisfied -- this is the point at which the
+	// login has actually succeeded, so this is where the counter resets.
+	// Outside the transaction, since it is a rate-limit side effect rather
+	// than part of the login's own state.
+	_ = s.stores.Lockouts.ClearFailedLoginAttempts(ctx, u.Email)
 	s.audit.Log(ctx, audit.Event{
 		Type: audit.EventUserLoginSucceeded, Result: audit.ResultSuccess, ActorID: u.ID, Email: u.Email,
 		UserAgent: userAgent, IPAddress: ipAddress, Metadata: map[string]any{"via": "two_factor"},

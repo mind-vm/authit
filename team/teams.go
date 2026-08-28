@@ -13,32 +13,39 @@ import (
 // CreateTeam creates a new team owned by ownerUserID and creates the
 // corresponding owner Member record.
 func (s *Service) CreateTeam(ctx context.Context, name, slug, ownerUserID, ownerDisplayName, ownerEmail string) (store.Team, error) {
-	if _, err := s.stores.Teams.GetTeamBySlug(ctx, slug); err == nil {
-		return store.Team{}, ErrSlugTaken
-	} else if !errors.Is(err, store.ErrNotFound) {
+	teamID, err := authitcrypto.NewID()
+	if err != nil {
 		return store.Team{}, err
 	}
-
-	teamID, err := authitcrypto.NewID()
+	memberID, err := authitcrypto.NewID()
 	if err != nil {
 		return store.Team{}, err
 	}
 	now := time.Now()
 	t := &store.Team{ID: teamID, Name: name, Slug: slug, OwnerID: ownerUserID, CreatedAt: now, UpdatedAt: now}
-	if err := s.stores.Teams.CreateTeam(ctx, t); err != nil {
-		return store.Team{}, err
-	}
 
-	memberID, err := authitcrypto.NewID()
+	// The slug check is inside the transaction with the write it guards:
+	// checked outside, two concurrent creations both see the slug free.
+	// The owner's member row is here too, because a team whose creation
+	// half-succeeded has no owner and therefore nobody who can administer
+	// or delete it.
+	err = store.RunInTx(ctx, s.stores.Tx, func(ctx context.Context) error {
+		if _, err := s.stores.Teams.GetTeamBySlug(ctx, slug); err == nil {
+			return ErrSlugTaken
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		if err := s.stores.Teams.CreateTeam(ctx, t); err != nil {
+			return err
+		}
+		owner := ownerUserID
+		return s.stores.Members.CreateMember(ctx, &store.Member{
+			ID: memberID, TeamID: teamID, UserID: &owner, Role: store.RoleOwner,
+			DisplayName: ownerDisplayName, Email: ownerEmail, IsActive: true,
+			CreatedAt: now, UpdatedAt: now,
+		})
+	})
 	if err != nil {
-		return store.Team{}, err
-	}
-	owner := ownerUserID
-	if err := s.stores.Members.CreateMember(ctx, &store.Member{
-		ID: memberID, TeamID: teamID, UserID: &owner, Role: store.RoleOwner,
-		DisplayName: ownerDisplayName, Email: ownerEmail, IsActive: true,
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
 		return store.Team{}, err
 	}
 	s.audit.Log(ctx, audit.Event{

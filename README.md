@@ -171,6 +171,35 @@ userSvc, _ := user.NewService(stores, signer, emailer, user.Config{
 
 `audit.SlogLogger` covers the common case of wanting these events in application logs (`ResultFailure`/`ResultDenied` log at Warn, everything else at Info). For a compliance trail (SOC2, GDPR, PCI-DSS) or a dedicated event pipeline, implement `audit.Logger` yourself — it's one method, `Log(ctx, audit.Event)`, and takes no error return: delivery guarantees (retry, buffering, an outbox) are the implementation's concern, not authit's, and a logging failure never affects the outcome of the operation being audited.
 
+## Transactions (optional)
+
+Several flows write more than once. `Refresh` revokes the old refresh token and creates the new one; `ResetPassword` sets the password, consumes the token and revokes sessions; `CreateTeam` creates the team and its owner. A crash between two of those writes leaves inconsistent state — a session neither ended nor renewed, a live reset link in an inbox, a team with no owner.
+
+Supply a `store.TxRunner` and those flows become atomic. Leave it nil and they behave exactly as before:
+
+```go
+user.Stores{ /* ... */ Tx: myTxRunner }
+team.Stores{ /* ... */ Tx: myTxRunner }
+superuser.Stores{ /* ... */ Tx: myTxRunner }
+```
+
+**The contract is the whole difficulty, so read it before implementing one.** authit calls store methods with the context `RunInTx` hands to your callback — that is its only way to say "this call belongs to that transaction", short of putting a database concept into interfaces whose purpose is not having one. So:
+
+> Every store method called with the context passed to `fn` **must** take part in the transaction. Every store method called with any other context **must not**.
+
+The usual shape is for `RunInTx` to begin a transaction, stash the handle in the context it passes to `fn`, and for each store method to use that handle when present and the pool otherwise. An implementation whose stores ignore the context and always use the pool will compile, pass its own tests, and provide no atomicity at all. If you cannot honour that, leave the field nil — losing atomicity you never had beats believing in atomicity you do not have.
+
+Two deliberate exclusions, both cases where a rollback would undo something that must survive the call returning an error:
+
+- **Refresh-token reuse detection.** It revokes every session and *then* returns an error. Inside the transaction, returning that error would roll back the revocation — the detection would fire, log itself, and undo its own response.
+- **Failed-login recording.** The attempt the rate limiter counts must outlive the failure that produced it.
+
+Audit events are emitted after commit, never inside, since a `TxRunner` is permitted to retry.
+
+One thing to know about `team`: `Admission` runs *inside* the transaction, so a seat limit is actually enforceable rather than advisory under concurrency — the count it is given and the member row that follows are consistent. Keep `AdmitMember` fast and free of external I/O; it holds a database transaction open.
+
+`storetest.TxProbe` and `storetest.TxWitness` let you assert which writes your own code puts inside a transaction. They provide no atomicity and are not a substitute for testing a real implementation against a real database.
+
 ## Checking your adapter (`storetest`)
 
 authit's whole design rests on you implementing the `store` ports, and nothing in the library can check that you got them right. An adapter that returns a nil pointer instead of `store.ErrNotFound`, or that filters revoked rows out of a lookup, compiles perfectly and fails at runtime — sometimes as a security bug rather than an outage. [`storetest`](storetest) is where those expectations are written down executably:
@@ -330,7 +359,7 @@ Leaving the field nil disables the control rather than breaking, the same shape 
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: there is no transaction boundary in the `store` ports, so multi-write flows are not atomic; and there are no lifecycle hooks, so extending a flow means wrapping the service method yourself. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: there are no lifecycle hooks, so extending a flow means wrapping the service method yourself. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 

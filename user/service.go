@@ -22,6 +22,12 @@ type Stores struct {
 	TOTP               store.TOTPStore
 	PendingTwoFactor   store.PendingTwoFactorStore
 	Lockouts           store.LockoutStore
+	// Tx is optional. Supplying it makes the flows that write more than
+	// once atomic -- Refresh, VerifyTwoFactorLogin and ResetPassword. Nil
+	// leaves them as a sequence of independent writes, which is what they
+	// have always been. See store.TxRunner for the obligation it puts on
+	// an implementation; it is not a formality.
+	Tx store.TxRunner
 }
 
 // Service implements user auth flows.

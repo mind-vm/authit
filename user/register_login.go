@@ -322,13 +322,29 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 	if err != nil {
 		return TokenPair{}, err
 	}
-	if err := s.stores.RefreshTokens.RevokeRefreshToken(ctx, t.ID); err != nil {
-		return TokenPair{}, err
-	}
-	tokens, err := s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
+
+	// Rotation is two writes -- revoke the old, create the new -- and a
+	// crash between them logs the user out of a session they were in the
+	// middle of renewing. Note that the reuse handling above is
+	// deliberately outside this: it must commit even though the call goes
+	// on to return an error, and rolling it back would undo the revocation
+	// that is the entire response to a stolen token.
+	var tokens TokenPair
+	err = store.RunInTx(ctx, s.stores.Tx, func(ctx context.Context) error {
+		if err := s.stores.RefreshTokens.RevokeRefreshToken(ctx, t.ID); err != nil {
+			return err
+		}
+		var err error
+		tokens, err = s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
+		return err
+	})
 	if err != nil {
 		return TokenPair{}, err
 	}
+
+	// Audit outside the transaction: a TxRunner is permitted to retry fn,
+	// and an event recorded from inside would then be recorded twice --
+	// or, on rollback, recorded for something that never happened.
 	s.audit.Log(ctx, audit.Event{
 		Type: audit.EventUserTokenRefreshed, Result: audit.ResultSuccess,
 		ActorID: u.ID, Email: u.Email, UserAgent: userAgent, IPAddress: ipAddress,

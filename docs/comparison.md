@@ -582,10 +582,44 @@ at the API surface, and either check lockout before the user lookup as documente
 `func(ctx, ...) error` where a non-nil error aborts the flow. This is ~80% of what better-auth's
 plugin system buys, at a fraction of the complexity, and it stays idiomatic Go.
 
-**T1.2 — Optional transactions.** An optional `store.TxRunner interface { RunInTx(ctx, fn func(ctx) error) error }`.
-Services type-assert their `Stores` for it and wrap multi-write flows (`Refresh`,
-`team.AcceptInvitation`, `team.CreateTeam`, `VerifyTwoFactorLogin`) when present, falling back to the
-current behaviour when absent. `sqlbstore` implements it; `memstore` does not need to.
+**T1.2 — Optional transactions.** ✅ *Done.* `store.TxRunner` (one method), an optional `Tx` field on
+`user.Stores`, `team.Stores` and `superuser.Stores`, and six flows wrapped: `Refresh` (both planes),
+`ResetPassword`, `VerifyTwoFactorLogin`, `CreateTeam`, `AcceptInvitation`. Nil changes nothing.
+
+The hard part is not the plumbing, it is the contract. authit calls store methods with the context
+`RunInTx` supplies, because that is the only channel it has — widening every port to take a
+transaction handle would put a database concept into interfaces whose entire purpose is not having
+one. So the obligation is on the implementation: *every store method called with `fn`'s context must
+join the transaction, and every method called with any other context must not.* An adapter whose
+stores ignore the context compiles, passes its own tests, and provides no atomicity at all. That is
+documented at length on the interface, along with the advice to leave the field nil rather than
+believe in atomicity you do not have.
+
+Three decisions where the obvious wrapping would have been wrong:
+
+- **Reuse detection stays outside.** `Refresh` revokes every session on detecting a replayed token and
+  *then* returns an error. Inside the transaction, that error rolls back the revocation — the
+  detection fires, logs itself, and undoes its own response. This is the one that would have quietly
+  disabled T0.7.
+- **Failed-login recording stays outside**, for the same reason: the attempt the rate limiter counts
+  must outlive the failure that produced it.
+- **Audit events are emitted after commit.** A `TxRunner` is permitted to retry, so an event logged
+  from inside would be logged twice — or, on rollback, logged for something that never happened.
+
+And one that went the other way: `team.Admission` now runs *inside* the transaction, so a seat limit
+is enforceable rather than advisory — the member count it is given and the member row that follows are
+consistent. The cost is that host code holds a transaction open, which is documented on the field.
+
+*Testing.* `storetest.TxProbe` and `TxWitness` record which operations a service enrolled.
+`TxWitness.AssertOutsideTx` is the direction that catches the subtle mistakes above. Both regressions
+were confirmed: sweeping the reuse revocation into the transaction fails
+`TestReuseRevocationSurvivesTheErrorReturn`, and removing the transaction from `Refresh` fails
+`TestRefreshRotatesInsideATransaction`. The probe provides no atomicity and says so — it answers "did
+the service put the right writes inside", not "does rollback work".
+
+*Changed:* `store/tx.go` (new), `storetest/tx.go` (new), `user/{service,register_login,password,twofactor}.go`,
+`team/{service,teams,invitations}.go`, `superuser/{service,auth}.go`.
+*Tests:* `user/tx_test.go`, `team/tx_test.go`.
 
 **T1.3 — Finish `authhandlers`.** ✅ *Done.* `NewTeamHandler`, `NewSuperuserHandler`, `NewPATHandler`
 and `NewDeviceHandler` join `NewUserHandler`, each a plain `http.Handler` over its service.

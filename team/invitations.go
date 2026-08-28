@@ -89,14 +89,6 @@ func (s *Service) AcceptInvitation(ctx context.Context, rawToken, userID, email,
 		return store.Member{}, ErrEmailMismatch
 	}
 
-	members, err := s.stores.Members.ListMembersByTeam(ctx, inv.TeamID)
-	if err != nil {
-		return store.Member{}, err
-	}
-	if err := s.admission.AdmitMember(ctx, inv.TeamID, len(members)); err != nil {
-		return store.Member{}, err
-	}
-
 	memberID, err := authitcrypto.NewID()
 	if err != nil {
 		return store.Member{}, err
@@ -108,14 +100,29 @@ func (s *Service) AcceptInvitation(ctx context.Context, rawToken, userID, email,
 		DisplayName: displayName, Email: email, IsActive: true,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.stores.Members.CreateMember(ctx, m); err != nil {
-		return store.Member{}, err
-	}
 
-	inv.Status = store.InvitationAccepted
-	inv.AcceptedAt = &now
-	inv.UpdatedAt = now
-	if err := s.stores.Invitations.UpdateInvitation(ctx, inv); err != nil {
+	// Counting seats, admitting, creating the member and closing the
+	// invitation all belong together. Split apart, two people accepting at
+	// once each see a seat free and both take it; and a member created
+	// without the invitation being marked accepted leaves a token that can
+	// be redeemed again.
+	err = store.RunInTx(ctx, s.stores.Tx, func(ctx context.Context) error {
+		members, err := s.stores.Members.ListMembersByTeam(ctx, inv.TeamID)
+		if err != nil {
+			return err
+		}
+		if err := s.admission.AdmitMember(ctx, inv.TeamID, len(members)); err != nil {
+			return err
+		}
+		if err := s.stores.Members.CreateMember(ctx, m); err != nil {
+			return err
+		}
+		inv.Status = store.InvitationAccepted
+		inv.AcceptedAt = &now
+		inv.UpdatedAt = now
+		return s.stores.Invitations.UpdateInvitation(ctx, inv)
+	})
+	if err != nil {
 		return store.Member{}, err
 	}
 	s.audit.Log(ctx, audit.Event{

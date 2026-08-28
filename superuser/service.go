@@ -18,6 +18,9 @@ type Stores struct {
 	RefreshTokens store.SuperuserRefreshTokenStore
 	// Lockouts is optional; if nil, failed-login lockout is disabled.
 	Lockouts store.LockoutStore
+	// Tx is optional. Supplying it makes Refresh's rotation atomic; nil
+	// leaves it as two independent writes. See store.TxRunner.
+	Tx store.TxRunner
 }
 
 // Config tunes the superuser package's flows. Defaults are intentionally

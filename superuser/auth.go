@@ -202,10 +202,18 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 	if !su.IsActive {
 		return TokenPair{}, ErrInactive
 	}
-	if err := s.stores.RefreshTokens.RevokeSuperuserRefreshToken(ctx, t.ID); err != nil {
-		return TokenPair{}, err
-	}
-	tokens, err := s.issueTokenPair(ctx, su.ID, su.Email, userAgent, ipAddress)
+	// Rotation is revoke-then-create; see the user plane's Refresh. The
+	// reuse handling above stays outside, because it must commit even
+	// though the call returns an error.
+	var tokens TokenPair
+	err = store.RunInTx(ctx, s.stores.Tx, func(ctx context.Context) error {
+		if err := s.stores.RefreshTokens.RevokeSuperuserRefreshToken(ctx, t.ID); err != nil {
+			return err
+		}
+		var err error
+		tokens, err = s.issueTokenPair(ctx, su.ID, su.Email, userAgent, ipAddress)
+		return err
+	})
 	if err != nil {
 		return TokenPair{}, err
 	}

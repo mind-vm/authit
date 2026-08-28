@@ -43,6 +43,15 @@ type Stores struct {
 	Teams       store.TeamStore
 	Members     store.MemberStore
 	Invitations store.InvitationStore
+	// Tx is optional. Supplying it makes CreateTeam and AcceptInvitation
+	// atomic; nil leaves them as independent writes. See store.TxRunner.
+	//
+	// Note that Admission runs inside the transaction, so that a seat limit
+	// is actually enforceable rather than advisory under concurrency: the
+	// member count it is given and the member row that follows are then
+	// consistent. Keep an AdmitMember implementation fast and free of
+	// external I/O -- it holds a database transaction open.
+	Tx store.TxRunner
 }
 
 // Admission is consulted before a new member is admitted to a team, either
