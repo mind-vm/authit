@@ -57,6 +57,15 @@ const (
 	// identity being attached to or detached from a user. Linking is a
 	// credential grant -- afterwards, that provider can sign this account
 	// in -- so it belongs in the same trail as a password change.
+	// Passkey events. A registration is a credential grant -- afterwards
+	// that authenticator can sign this account in -- and a clone warning
+	// is the specification's one built-in signal that a private key has
+	// been copied, so both belong in the same trail as a password change.
+	EventPasskeyRegistered   EventType = "user.passkey.registered"
+	EventPasskeyRemoved      EventType = "user.passkey.removed"
+	EventPasskeyLogin        EventType = "user.passkey.login"
+	EventPasskeyCloneWarning EventType = "user.passkey.clone_warning"
+
 	EventAccountLinked   EventType = "user.account.linked"
 	EventAccountUnlinked EventType = "user.account.unlinked"
 

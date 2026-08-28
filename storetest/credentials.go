@@ -439,3 +439,124 @@ func RunAccountStore(t *testing.T, newStore func(*testing.T) store.AccountStore,
 		requireNotFound(t, "GetAccountByProvider after delete", err)
 	})
 }
+
+// RunWebAuthnCredentialStore checks store.WebAuthnCredentialStore.
+func RunWebAuthnCredentialStore(t *testing.T, newStore func(*testing.T) store.WebAuthnCredentialStore, fx Fixtures) {
+	// Deliberately not valid UTF-8, and containing a zero byte: the blob
+	// and the credential id are binary, and a column typed as text will
+	// mangle both.
+	blob := []byte{0x00, 0x7b, 0xff, 0xfe, 0x22, 0x7d}
+	mk := func(rowID, userID string, credID []byte) *store.WebAuthnCredential {
+		return &store.WebAuthnCredential{
+			ID: rowID, UserID: userID, CredentialID: credID, Data: blob,
+			Name: "Test Key", Transports: []string{"internal", "hybrid"},
+			BackupEligible: true, BackupState: true,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}
+	}
+
+	t.Run("missing rows report ErrNotFound", func(t *testing.T) {
+		s := newStore(t)
+		_, err := s.GetWebAuthnCredential(ctx(), id(99))
+		requireNotFound(t, "GetWebAuthnCredential", err)
+		_, err = s.GetWebAuthnCredentialByCredentialID(ctx(), []byte("no-such-credential"))
+		requireNotFound(t, "GetWebAuthnCredentialByCredentialID", err)
+	})
+
+	t.Run("binary fields round trip exactly", func(t *testing.T) {
+		// Data is the authoritative credential record: the public key a
+		// signature is checked against lives in it. A byte lost here is
+		// every future login for that authenticator failing.
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		credID := []byte{0x00, 0x01, 0xff, 0x80, 0x7f}
+		requireNoError(t, "create", s.CreateWebAuthnCredential(ctx(), mk(id(41), id(1), credID)))
+
+		got, err := s.GetWebAuthnCredentialByCredentialID(ctx(), credID)
+		requireNoError(t, "GetWebAuthnCredentialByCredentialID", err)
+		if !slices.Equal(got.Data, blob) {
+			t.Fatalf("Data = %v, want %v: store it as bytes, not text", got.Data, blob)
+		}
+		if !slices.Equal(got.CredentialID, credID) {
+			t.Fatalf("CredentialID = %v, want %v", got.CredentialID, credID)
+		}
+		if !slices.Equal(got.Transports, []string{"internal", "hybrid"}) {
+			t.Fatalf("Transports = %v", got.Transports)
+		}
+		if !got.BackupEligible || !got.BackupState {
+			t.Fatalf("backup flags did not round trip: %+v", got)
+		}
+	})
+
+	t.Run("a credential id belongs to at most one row", func(t *testing.T) {
+		// The UNIQUE constraint. This lookup is the only thing deciding
+		// whose credential just signed the challenge, so a duplicate makes
+		// it a coin flip between two accounts.
+		s := newStore(t)
+		fx.ensureUser(t, id(1), id(2))
+		credID := []byte{0x01, 0x02, 0x03}
+		requireNoError(t, "create", s.CreateWebAuthnCredential(ctx(), mk(id(41), id(1), credID)))
+		if err := s.CreateWebAuthnCredential(ctx(), mk(id(42), id(2), credID)); err == nil {
+			t.Fatal("a duplicate credential id must be refused; add a UNIQUE constraint")
+		}
+	})
+
+	t.Run("listing is scoped to one user", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureUser(t, id(1), id(2))
+		requireNoError(t, "create", s.CreateWebAuthnCredential(ctx(), mk(id(41), id(1), []byte{1})))
+		requireNoError(t, "create", s.CreateWebAuthnCredential(ctx(), mk(id(42), id(1), []byte{2})))
+		requireNoError(t, "create", s.CreateWebAuthnCredential(ctx(), mk(id(43), id(2), []byte{3})))
+
+		list, err := s.ListWebAuthnCredentialsByUser(ctx(), id(1))
+		requireNoError(t, "ListWebAuthnCredentialsByUser", err)
+		if len(list) != 2 {
+			t.Fatalf("listed %d credentials, want 2", len(list))
+		}
+	})
+
+	t.Run("sign count and clone warning persist", func(t *testing.T) {
+		// The updated blob carries the new signature counter, and the
+		// clone flag is what a compromised-credential query finds. An
+		// update that does not stick means the counter never advances in
+		// storage, so every subsequent login looks like a regression --
+		// or, worse, a real regression never gets recorded.
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		c := mk(id(41), id(1), []byte{1})
+		requireNoError(t, "create", s.CreateWebAuthnCredential(ctx(), c))
+
+		used := time.Now()
+		c.Data = []byte{0x09, 0x08, 0x00, 0x07}
+		c.CloneWarning = true
+		c.LastUsedAt = &used
+		requireNoError(t, "UpdateWebAuthnCredential", s.UpdateWebAuthnCredential(ctx(), c))
+
+		got, err := s.GetWebAuthnCredential(ctx(), id(41))
+		requireNoError(t, "GetWebAuthnCredential", err)
+		if !slices.Equal(got.Data, []byte{0x09, 0x08, 0x00, 0x07}) {
+			t.Fatalf("the updated credential record did not persist: %v", got.Data)
+		}
+		if !got.CloneWarning {
+			t.Fatal("CloneWarning did not persist; it is the only durable trace of a cloned authenticator")
+		}
+		if got.LastUsedAt == nil {
+			t.Fatal("LastUsedAt did not persist")
+		}
+	})
+
+	t.Run("delete frees the credential id", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		credID := []byte{0x01, 0x02}
+		requireNoError(t, "create", s.CreateWebAuthnCredential(ctx(), mk(id(41), id(1), credID)))
+		requireNoError(t, "delete", s.DeleteWebAuthnCredential(ctx(), id(41)))
+
+		_, err := s.GetWebAuthnCredential(ctx(), id(41))
+		requireNotFound(t, "GetWebAuthnCredential after delete", err)
+		// A revoked authenticator must be registerable again -- somebody
+		// who removed a key by mistake should be able to add it back.
+		_, err = s.GetWebAuthnCredentialByCredentialID(ctx(), credID)
+		requireNotFound(t, "GetWebAuthnCredentialByCredentialID after delete", err)
+	})
+}

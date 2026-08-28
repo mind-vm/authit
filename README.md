@@ -30,6 +30,7 @@ authit was designed by studying two existing implementations (a full-featured bu
 | `pat` | Personal access tokens — named, scoped, optionally-expiring bearer credentials for CLIs/scripts |
 | `device` | RFC 8628 OAuth 2.0 Device Authorization Grant — "visit this URL, enter this code" CLI login |
 | `oidc` | Sign-in with an external identity provider (Google, GitHub, your SSO) |
+| `passkey` | WebAuthn — passkeys, Touch ID, security keys — as a second factor or a primary one |
 | `authithttp` | The only HTTP wiring authit ships: RFC-correct bearer-token extraction, validation, and 401-vs-500 classification |
 | `audit` | Opt-in security-event logging (`Logger`, `Event`, `NoopLogger`, `SlogLogger`) — every service's `Config` carries a nil-safe `AuditLogger` |
 
@@ -312,6 +313,37 @@ Three things `store/*.go` will not tell you, and the reason the reference exists
 - **Email delivery.** `user.EmailSender` is an interface; bring your own SMTP/API client.
 - **Social/OAuth login, RBAC policy engines.** Out of scope for now; `team.Role` and `store.Member.Role` are plain strings you can extend.
 
+## Passkeys (`passkey`)
+
+`passkey` adds WebAuthn, both as a second factor behind a password and as a primary credential that replaces one.
+
+```go
+svc, _ := passkey.NewService(passkey.Stores{Users: users, Credentials: creds}, passkey.Config{
+	RPDisplayName: "Example Inc",
+	RPID:          "example.com",
+	RPOrigins:     []string{"https://example.com"},
+})
+
+// Registration, for a user you have already authenticated:
+opts, session, _ := svc.BeginRegistration(ctx, userID)   // send opts; store session
+cred, err := svc.FinishRegistration(ctx, userID, "MacBook Touch ID", session, r)
+
+// Usernameless login — no email typed, no password:
+opts, session, _ := svc.BeginDiscoverableLogin(ctx)
+res, err := svc.FinishDiscoverableLogin(ctx, session, r)
+// res.User is the account. Minting a session is yours, as with oidc, pat and device.
+```
+
+**The distinction that decides whether this is one factor or two is user verification.** A passkey proves possession of a device. It carries a *second* factor only when the authenticator asks for a PIN or biometric before signing — so `Config.UserVerification` defaults to `VerificationRequired`, and `Result.UserVerified` reports what actually happened in *this* assertion. Relax it only for a passkey used strictly behind a password, and know that doing so makes a passkey-only login single-factor: anyone holding an unlocked device is the user.
+
+**A signature counter that does not advance is evidence the private key exists in more than one place.** `Config.OnClone` defaults to `CloneReject` — refuse the login and flag the credential. The flag is recorded even when the login is refused, or the next attempt would look like the first. `CloneFlag` allows the login and still records; choose it knowing some authenticators report a counter of zero forever and so never trigger this at all.
+
+`RPID` is your registrable domain, and a credential is bound to it permanently — change it and every passkey your users hold stops working, with no migration. `RPOrigins` must be non-empty; an empty list would allow every origin, removing the check that stops another site from driving the ceremony.
+
+Ceremony state is handed back to you, not stored — same as OAuth state in `oidc`, for the same reasons. `Remove` refuses to take away the last thing an account can be reached with.
+
+**Not verified:** attestation against the FIDO Metadata Service. That answers "is this authenticator model one I trust", which matters for enterprises enforcing a hardware policy and is irrelevant to almost everyone else. Registration records what the authenticator supplied and does not judge it.
+
 ## Social sign-in (`oidc`)
 
 `oidc` adds "sign in with Google/GitHub/your SSO" on top of authit's own accounts. It runs the OAuth 2.0 authorization code flow with PKCE and state, then asks the provider who signed in via its userinfo endpoint over TLS.
@@ -452,7 +484,7 @@ Leaving the field nil disables the control rather than breaking, the same shape 
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does); `oidc` ships no HTTP route group, so the redirect and callback handlers are yours; and there is no passkey/WebAuthn support. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does); and neither `oidc` nor `passkey` ships an HTTP route group, so those handlers are yours. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 

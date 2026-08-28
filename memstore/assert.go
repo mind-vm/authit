@@ -19,4 +19,5 @@ var (
 	_ store.PersonalAccessTokenStore   = (*PersonalAccessTokenStore)(nil)
 	_ store.DeviceAuthorizationStore   = (*DeviceAuthorizationStore)(nil)
 	_ store.AccountStore               = (*AccountStore)(nil)
+	_ store.WebAuthnCredentialStore    = (*WebAuthnCredentialStore)(nil)
 )

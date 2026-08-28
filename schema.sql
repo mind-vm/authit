@@ -191,6 +191,40 @@ CREATE TABLE accounts (
 );
 CREATE INDEX accounts_user_id_idx ON accounts (user_id);
 
+-- store.WebAuthnCredentialStore / store.WebAuthnCredential -- passkeys and
+-- security keys (passkey package). Absent from the user plane above because
+-- a password-only deployment needs none of it.
+--
+-- credential_id is UNIQUE and it matters: it is what an assertion is looked
+-- up by, and therefore the only thing deciding whose credential just signed
+-- the challenge.
+--
+-- credential_id and data are bytea, NOT text. data is the authoritative
+-- credential record -- it holds the public key a signature is checked
+-- against -- and it is neither UTF-8 nor free of zero bytes. A text column
+-- will mangle it, and the symptom is every login for that authenticator
+-- failing after it was stored successfully.
+--
+-- The remaining columns are denormalised out of data and rewritten on every
+-- update, so a settings page can list credentials without decoding a blob
+-- and an operator can query for clone_warning. When they disagree with
+-- data, data wins.
+CREATE TABLE webauthn_credentials (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    credential_id   bytea       NOT NULL UNIQUE,
+    data            bytea       NOT NULL,
+    name            text        NOT NULL DEFAULT '',
+    transports      text[]      NOT NULL DEFAULT '{}',
+    backup_eligible boolean     NOT NULL DEFAULT false,
+    backup_state    boolean     NOT NULL DEFAULT false,
+    clone_warning   boolean     NOT NULL DEFAULT false,
+    last_used_at    timestamptz,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX webauthn_credentials_user_id_idx ON webauthn_credentials (user_id);
+
 -- ---------------------------------------------------------------------------
 -- team plane -- team.Stores
 -- ---------------------------------------------------------------------------

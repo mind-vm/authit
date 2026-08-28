@@ -166,7 +166,7 @@ mutation, and that check — not the storage — is the part people get wrong.
 | Audit logging | partial (hooks) | ✅ (`audit`) |
 | **Social / OAuth login** | ✅ | ✅ (`oidc`) *(was out of scope)* |
 | **OIDC / SSO / SAML** | ✅ (plugins) | partial — any OAuth 2.0/OIDC provider; no SAML |
-| **Passkeys / WebAuthn** | ✅ (plugin) | ❌ |
+| **Passkeys / WebAuthn** | ✅ (plugin) | ✅ (`passkey`) *(was absent)* |
 | **Magic link / email OTP** | ✅ (plugins) | ❌ |
 | **Built-in rate limiting** | ✅ (per-path rules) | ✅ (port + in-memory bucket) *(was lockout only)* |
 | **Migrations / schema CLI** | ✅ | ❌ (reference `schema.sql`) |
@@ -855,8 +855,49 @@ Both are mechanical; neither is in this change.
 (`golang.org/x/oauth2`). *Tests:* `oidc/oidc_test.go` against a fake provider that enforces PKCE the
 way a real one does; the linking regression was confirmed by removing the policy check.
 
-**T2.2 — Passkeys / WebAuthn.** Arguably worth more than TOTP now. `go-webauthn/webauthn` plus a
-`store.CredentialStore`. Slots in beside `twofactor.go` as a second-factor *and* as a primary factor.
+**T2.2 — Passkeys / WebAuthn.** ✅ *Done.* New `passkey` package over `go-webauthn/webauthn`, new
+`store.WebAuthnCredentialStore` port. Registration, known-user login, and usernameless discoverable
+login; credential management with rename and revoke.
+
+**The security decision is user verification**, and it is the same shape as `oidc`'s linking policy: a
+passkey proves possession of a device, and carries a *second* factor only when the authenticator asks
+for a PIN or biometric first. `Config.UserVerification` therefore defaults to `VerificationRequired`,
+and `Result.UserVerified` reports what happened in this assertion so a host that relaxed it can still
+decide to ask for a password.
+
+**A test caught a real bug in that field.** The first implementation read `Credential.Flags.UserVerified`
+off the credential returned by `FinishLogin` — which carries the flags recorded at *registration*, not
+this assertion. So `UserVerified` reported user verification that happened once, months ago, for a
+login where it did not happen at all. The library's own check still refused the login under
+`VerificationRequired`, so only the reported value was wrong — but that value exists precisely for the
+hosts who relaxed the requirement and use it to decide whether to also ask for a password. Fixed by
+parsing the assertion and reading the flag from it, via `ValidateLogin` rather than `FinishLogin`.
+
+Two other decisions worth recording:
+
+- **Clone detection rejects by default.** A signature counter that fails to advance is the
+  specification's one built-in signal that a private key has been copied. The warning is persisted
+  *before* the login is refused — losing it because the request failed would make the next attempt
+  look like the first.
+- **`Data` is an opaque authoritative blob**, and the other columns are denormalised out of it. The
+  library's `Credential` struct has grown fields across versions; decomposing it into store columns
+  would mean every upgrade risks silently dropping one. The port stays free of the library's types,
+  and the conformance suite requires the blob to round-trip byte-exact — it is neither UTF-8 nor free
+  of zero bytes, so a text column mangles it and every subsequent login for that authenticator fails.
+
+*Corrected, as in T0.8:* the user-handle ownership check in the discoverable-login handler is defence
+in depth, not the load-bearing control — the library performs the same comparison (§7.2 step 6), and
+removing the local check does not make the test fail. Said so rather than implying otherwise.
+
+*Not done:* attestation verification against the FIDO Metadata Service — it answers "is this
+authenticator model one I trust", needs a metadata blob and its trust chain, and matters to
+enterprises enforcing hardware policy rather than to most deployments. Also no `authhandlers` route
+group and no `sqlbstore` adapter.
+
+*Changed:* `passkey/` (new), `store/webauthn.go` (new), `memstore/webauthn.go` (new),
+`storetest/credentials.go`, `audit/audit.go`, `schema.sql`, `go.mod`.
+*Tests:* `passkey/` — against a virtual authenticator that holds an ES256 key and signs for real,
+since every property worth checking is downstream of a signature actually verifying.
 
 **T2.3 — Magic link and email OTP.** Cheapest features on this list: `crypto` already generates and
 hashes opaque tokens, `EmailSender` already exists, and the token lifecycle is the same shape as
