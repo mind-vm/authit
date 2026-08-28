@@ -171,6 +171,39 @@ userSvc, _ := user.NewService(stores, signer, emailer, user.Config{
 
 `audit.SlogLogger` covers the common case of wanting these events in application logs (`ResultFailure`/`ResultDenied` log at Warn, everything else at Info). For a compliance trail (SOC2, GDPR, PCI-DSS) or a dedicated event pipeline, implement `audit.Logger` yourself — it's one method, `Log(ctx, audit.Event)`, and takes no error return: delivery guarantees (retry, buffering, an outbox) are the implementation's concern, not authit's, and a logging failure never affects the outcome of the operation being audited.
 
+## Hooks
+
+`user.Config.Hooks` is where a flow stops being authit's business and starts being your application's — refusing an address outside your domain, provisioning a workspace, stamping a last-seen timestamp. Every field is nil-safe, and a hook's error reaches the caller unchanged so you can match your own sentinels with `errors.Is`.
+
+```go
+user.Config{Hooks: user.Hooks{
+	BeforeRegister: func(ctx context.Context, email string) error {
+		if !strings.HasSuffix(email, "@corp.example") {
+			return ErrNotInvited
+		}
+		return nil
+	},
+	AfterRegister: func(ctx context.Context, u store.User) error {
+		return provisionWorkspace(ctx, u.ID)
+	},
+}}
+```
+
+**Before and After mean different things.** A `Before` hook is a gate: it runs before anything is written, and an error refuses the operation cleanly. An `After` hook runs once the operation succeeded, and whether its error can still undo anything depends on `Stores.Tx`:
+
+- **With a `TxRunner`**, `After` hooks run inside the same transaction as the operation's writes, so an error rolls the whole thing back — "create the account only if provisioning succeeds" actually holds.
+- **Without one**, the writes have already landed. The error still reaches the caller, but the user exists. Treat the hook as a notification.
+
+If an `After` hook guards something that must not half-happen, configure a `TxRunner`. Note that a flow whose only second participant is a hook you did not configure takes no transaction at all — a login is one write, and wrapping it to guard a nil hook would cost a round trip for nothing.
+
+Three placement decisions worth knowing:
+
+- **`BeforeRegister` sees the normalised address** and fires *before* the already-taken check, so it is reached even for a duplicate registration. It is a cheap gate; making it pay for a database round trip first would defeat the point.
+- **`BeforeAuthenticate` runs after rate limiting and the lockout** — so it cannot be used to bypass either — and before the password comparison, so refusing there costs no KDF work.
+- **`AfterAuthenticate` fires only on a *fully* completed login.** For an account with 2FA, that means after the second factor. A hook stamping last-seen must not fire for a login that stopped half way.
+
+Hooks run in the request's goroutine, and with a `TxRunner` they run inside an open transaction. Slow work — mail, third-party APIs — belongs in a queue the hook writes to, not in the hook.
+
 ## Transactions (optional)
 
 Several flows write more than once. `Refresh` revokes the old refresh token and creates the new one; `ResetPassword` sets the password, consumes the token and revokes sessions; `CreateTeam` creates the team and its owner. A crash between two of those writes leaves inconsistent state — a session neither ended nor renewed, a live reset link in an inbox, a team with no owner.
@@ -359,7 +392,7 @@ Leaving the field nil disables the control rather than breaking, the same shape 
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: there are no lifecycle hooks, so extending a flow means wrapping the service method yourself. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does); and there is no cookie helper, so storing a refresh token safely in a browser is still your call. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 

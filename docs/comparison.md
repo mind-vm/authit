@@ -171,7 +171,7 @@ mutation, and that check — not the storage — is the part people get wrong.
 | **Built-in rate limiting** | ✅ (per-path rules) | ✅ (port + in-memory bucket) *(was lockout only)* |
 | **Migrations / schema CLI** | ✅ | ❌ (reference `schema.sql`) |
 | **Typed client SDK** | ✅ | ❌ (out of scope, correctly) |
-| **Access-control model** | ✅ | ❌ (by design) |
+| **Access-control model** | ✅ | ❌ (by design; `authhandlers.TeamAuthorizer` at the HTTP edge) |
 | **Pluggable password hashing** | ✅ (scrypt default) | ✅ (argon2id default) |
 | **Password policy** | ✅ (length) | ✅ (composable validators) |
 | Storage-port architecture | ❌ (adapters, but its schema) | ✅ |
@@ -577,10 +577,44 @@ at the API surface, and either check lockout before the user lookup as documente
 
 ### Tier 1 — close the adoption gap without changing what authit is
 
-**T1.1 — Lifecycle hooks.** A `user.Hooks` struct on `Config` with nil-safe
-`BeforeRegister/AfterRegister/BeforeAuthenticate/AfterAuthenticate/AfterPasswordChange`, each
-`func(ctx, ...) error` where a non-nil error aborts the flow. This is ~80% of what better-auth's
-plugin system buys, at a fraction of the complexity, and it stays idiomatic Go.
+**T1.1 — Lifecycle hooks.** ✅ *Done.* `user.Config.Hooks` with `BeforeRegister`, `AfterRegister`,
+`BeforeAuthenticate`, `AfterAuthenticate` and `AfterPasswordChange`. All nil-safe; a hook's error
+reaches the caller unchanged so hosts can use their own sentinels.
+
+The design question worth answering was what an `After` hook's error *means* — the operation already
+happened, so returning an error is either meaningless or it undoes something. T1.2 made the good
+answer available: **After hooks run inside the same transaction as the operation's writes**, so an
+error rolls the operation back and "create the account only if provisioning succeeds" actually holds.
+Without a `TxRunner` the writes have already landed independently and the hook is a notification;
+that difference is documented rather than glossed, because it is the difference between a guarantee
+and a hope.
+
+Placement mattered more than the mechanism, and each choice is pinned by a test:
+
+- **`BeforeAuthenticate` runs after rate limiting and the lockout**, so it cannot be used to reach
+  past the brute-force controls, and before the password comparison, so refusing costs no KDF work.
+- **`AfterAuthenticate` fires only on a fully completed login.** For an account with 2FA that means
+  after the second factor — it is reached from `Authenticate`'s no-2FA path and from
+  `VerifyTwoFactorLogin`, and nowhere else. Firing it when the password was accepted would have a
+  last-seen hook recording logins that never completed.
+- **`BeforeRegister` sees the normalised address** and fires before the taken check: it is a cheap
+  gate, and making an allow-list re-implement normalisation would guarantee a subtle mismatch.
+
+One thing fell out of the work rather than being planned. Wrapping `Register` and `Authenticate` to
+accommodate their After hooks made my own T1.2 test fail — *"logging in is a single write and should
+not open a transaction"* — which was correct: a transaction guarding one write and a nil hook is a
+round trip spent on nothing. Those flows now take a transaction only when the relevant hook exists.
+The genuinely multi-write flows always do.
+
+Both regressions were confirmed: moving `AfterRegister` outside the transaction fails
+`TestAfterRegisterRollsBackWithATxRunner`, and firing `AfterAuthenticate` at the password step fails
+`TestAfterAuthenticateOnlyFiresOnACompletedLogin`.
+
+*Scope:* the `user` plane only. `team`, `superuser`, `pat` and `device` have no hooks yet; the shape
+transfers directly if they need them.
+
+*Changed:* `user/hooks.go` (new), `user/{config,register_login,password,twofactor}.go`.
+*Tests:* `user/hooks_test.go`.
 
 **T1.2 — Optional transactions.** ✅ *Done.* `store.TxRunner` (one method), an optional `Tx` field on
 `user.Stores`, `team.Stores` and `superuser.Stores`, and six flows wrapped: `Refresh` (both planes),

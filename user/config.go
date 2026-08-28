@@ -115,6 +115,11 @@ type Config struct {
 	// into one bucket, so a host that does not supply one loses the
 	// per-address limit but keeps the rest.
 	RateLimiter ratelimit.Limiter
+	// Hooks are optional callbacks into the host's own code at the points
+	// where a flow stops being authit's business. The zero value does
+	// nothing. See Hooks for what Before and After each guarantee, which
+	// differs depending on whether Stores.Tx is configured.
+	Hooks Hooks
 }
 
 func (c Config) withDefaults() Config {

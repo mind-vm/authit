@@ -287,7 +287,11 @@ func (s *Service) VerifyTwoFactorLogin(ctx context.Context, pendingToken, code, 
 		}
 		var err error
 		tokens, err = s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
-		return err
+		if err != nil {
+			return err
+		}
+		// Only now has the login fully succeeded.
+		return s.cfg.Hooks.afterAuthenticate(ctx, *u)
 	})
 	if err != nil {
 		return AuthResult{}, err

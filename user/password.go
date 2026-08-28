@@ -29,7 +29,12 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	}
 	u.PasswordHash = hash
 	u.UpdatedAt = time.Now()
-	if err := s.stores.Users.UpdateUser(ctx, u); err != nil {
+	if err := s.txIf(ctx, s.cfg.Hooks.AfterPasswordChange != nil, func(ctx context.Context) error {
+		if err := s.stores.Users.UpdateUser(ctx, u); err != nil {
+			return err
+		}
+		return s.cfg.Hooks.afterPasswordChange(ctx, *u)
+	}); err != nil {
 		return err
 	}
 	s.audit.Log(ctx, audit.Event{Type: audit.EventUserPasswordChanged, Result: audit.ResultSuccess, ActorID: u.ID, Email: u.Email})
@@ -134,7 +139,10 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword strin
 		if err := s.stores.PasswordResets.MarkPasswordResetTokenUsed(ctx, t.ID); err != nil {
 			return err
 		}
-		return s.stores.RefreshTokens.RevokeAllUserRefreshTokens(ctx, u.ID)
+		if err := s.stores.RefreshTokens.RevokeAllUserRefreshTokens(ctx, u.ID); err != nil {
+			return err
+		}
+		return s.cfg.Hooks.afterPasswordChange(ctx, *u)
 	})
 	if err != nil {
 		return err

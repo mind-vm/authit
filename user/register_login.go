@@ -19,6 +19,9 @@ func (s *Service) Register(ctx context.Context, email, password string) (store.U
 	if err := s.cfg.PasswordValidator(ctx, email, password); err != nil {
 		return store.User{}, err
 	}
+	if err := s.cfg.Hooks.beforeRegister(ctx, email); err != nil {
+		return store.User{}, err
+	}
 	if _, err := s.stores.Users.GetUserByEmail(ctx, email); err == nil {
 		return store.User{}, ErrEmailTaken
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -43,7 +46,16 @@ func (s *Service) Register(ctx context.Context, email, password string) (store.U
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if err := s.stores.Users.CreateUser(ctx, u); err != nil {
+	// The insert and the hook share a transaction when both a TxRunner and
+	// an AfterRegister hook are configured, so a host that provisions
+	// something there can refuse and leave no account behind. With no
+	// hook, this is a single insert and needs no transaction.
+	if err := s.txIf(ctx, s.cfg.Hooks.AfterRegister != nil, func(ctx context.Context) error {
+		if err := s.stores.Users.CreateUser(ctx, u); err != nil {
+			return err
+		}
+		return s.cfg.Hooks.afterRegister(ctx, *u)
+	}); err != nil {
 		return store.User{}, err
 	}
 	s.audit.Log(ctx, audit.Event{Type: audit.EventUserRegistered, Result: audit.ResultSuccess, ActorID: u.ID, Email: u.Email})
@@ -90,6 +102,13 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		})
 		return AuthResult{}, ErrAccountLocked
 	}
+	// After the rate limit and the lockout, so a hook cannot be used to
+	// bypass either, and before the hash comparison, so refusing here
+	// costs no KDF work.
+	if err := s.cfg.Hooks.beforeAuthenticate(ctx, email); err != nil {
+		return AuthResult{}, err
+	}
+
 	if u == nil || !s.cfg.PasswordHasher.Verify(password, u.PasswordHash) {
 		s.recordFailedLogin(ctx, email, ipAddress)
 		actorID := ""
@@ -135,8 +154,19 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 	// guesses at the second factor.
 	_ = s.stores.Lockouts.ClearFailedLoginAttempts(ctx, email)
 
-	tokens, err := s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
-	if err != nil {
+	// This is a completed login -- no second factor is owed -- so the
+	// session and the hook go in together. AfterAuthenticate is reached
+	// here and in VerifyTwoFactorLogin, and nowhere else: a login that
+	// stopped at the password step has not succeeded.
+	var tokens TokenPair
+	if err := s.txIf(ctx, s.cfg.Hooks.AfterAuthenticate != nil, func(ctx context.Context) error {
+		var err error
+		tokens, err = s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
+		if err != nil {
+			return err
+		}
+		return s.cfg.Hooks.afterAuthenticate(ctx, *u)
+	}); err != nil {
 		return AuthResult{}, err
 	}
 	s.audit.Log(ctx, audit.Event{
