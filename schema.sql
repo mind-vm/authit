@@ -157,6 +157,40 @@ CREATE TABLE account_locks (
     locked_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- store.AccountStore / store.Account -- external identities (oidc package).
+-- Absent from the user plane above because a password-only deployment needs
+-- none of it.
+--
+-- The UNIQUE constraint on (provider, provider_account_id) is the important
+-- line in this table. That pair is the only thing deciding which user a
+-- social sign-in belongs to; without the constraint a duplicate row makes
+-- the lookup a coin flip between two accounts, which is an account takeover.
+--
+-- email is deliberately NOT unique: two providers can assert the same
+-- address, and one can assert an address belonging to somebody else's
+-- account. Treating it as an identifier is the classic social-login
+-- vulnerability -- see oidc.LinkingPolicy.
+--
+-- The token columns are bytea, not text: they hold AES-256-GCM ciphertext,
+-- which contains zero bytes that a text column will mangle. They are NULL
+-- unless oidc.Config.ProviderTokenKey is set, which it is not by default.
+CREATE TABLE accounts (
+    id                      uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                 uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider                text        NOT NULL,
+    provider_account_id     text        NOT NULL,
+    email                   text        NOT NULL DEFAULT '',
+    email_verified          boolean     NOT NULL DEFAULT false,
+    access_token_encrypted  bytea,
+    refresh_token_encrypted bytea,
+    token_expires_at        timestamptz,
+    scopes                  text[]      NOT NULL DEFAULT '{}',
+    created_at              timestamptz NOT NULL DEFAULT now(),
+    updated_at              timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (provider, provider_account_id)
+);
+CREATE INDEX accounts_user_id_idx ON accounts (user_id);
+
 -- ---------------------------------------------------------------------------
 -- team plane -- team.Stores
 -- ---------------------------------------------------------------------------

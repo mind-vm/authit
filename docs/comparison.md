@@ -164,8 +164,8 @@ mutation, and that check — not the storage — is the part people get wrong.
 | Admin / operator plane | ✅ (plugin, role on `user`) | ✅ (`superuser`, structurally separate) |
 | Impersonation | ✅ | ✅ |
 | Audit logging | partial (hooks) | ✅ (`audit`) |
-| **Social / OAuth login** | ✅ | ❌ (explicitly out of scope) |
-| **OIDC / SSO / SAML** | ✅ (plugins) | ❌ |
+| **Social / OAuth login** | ✅ | ✅ (`oidc`) *(was out of scope)* |
+| **OIDC / SSO / SAML** | ✅ (plugins) | partial — any OAuth 2.0/OIDC provider; no SAML |
 | **Passkeys / WebAuthn** | ✅ (plugin) | ❌ |
 | **Magic link / email OTP** | ✅ (plugins) | ❌ |
 | **Built-in rate limiting** | ✅ (per-path rules) | ✅ (port + in-memory bucket) *(was lockout only)* |
@@ -812,12 +812,48 @@ was written, so it compiles and skips. `memstore`'s half runs on every `go test 
 
 ### Tier 2 — feature scope, in the order that pays
 
-**T2.1 — Social / OIDC login.** This is the number one reason a team picks better-auth, and "no social
-login, by design" is a stance that will cost adoption more than it saves complexity. Do it without
-compromising the architecture: a new `oidc` package, a new `store.AccountStore` port (provider,
-provider account ID, tokens, scopes — the equivalent of better-auth's `account` table), and
-`golang.org/x/oauth2` for the handshake. Core `user` stays password-only; linking an OIDC identity to
-an existing user becomes an explicit call.
+**T2.1 — Social / OIDC login.** ✅ *Done.* New `oidc` package, new `store.AccountStore` port,
+`golang.org/x/oauth2` for the handshake. Core `user` stays password-only, exactly as this document
+proposed; linking is an explicit call.
+
+**The security decision is account linking, and it gets a named type rather than a boolean.** The
+attack: someone who can make a provider assert an address they do not own signs in, is silently
+linked to the victim's existing account, and is now the victim. Every "sign in with X" takeover works
+this way. So `LinkingPolicy` has a deliberately inconvenient zero value — `LinkingManual` refuses to
+link automatically and returns `ErrAccountNotLinked`, which is not a failure but the safe outcome, and
+the host's move is to have the user sign in by the means they already have and call `Link`.
+`LinkingVerifiedEmail` is available and documented as only being worth the provider's claim.
+
+Three scope decisions worth recording:
+
+- **No ID token verification.** Doing it properly means a JWKS client, a cache, rotation handling, and
+  issuer/audience/expiry/nonce checks — a meaningful amount of security-critical machinery. A direct
+  TLS call to the provider's userinfo endpoint establishes the same fact with the same trust, works
+  for providers that are OAuth 2.0 but not OIDC (GitHub), and has no signature checking to get wrong.
+  The cost is one round trip per sign-in, and the limitation is stated in the package doc rather than
+  left to be discovered.
+- **Provider tokens are not stored** unless `ProviderTokenKey` is set, and are AES-256-GCM encrypted
+  when they are — reusing the same primitive as TOTP secrets. A credential you do not keep cannot
+  leak, so not keeping it is the default.
+- **State and the PKCE verifier are returned to the caller**, not stored. They belong to one browser
+  for one minute; keeping them would mean another store port and a cleanup problem, to hold state
+  that has a natural home in a short-lived cookie.
+
+Smaller things that matter: the link is keyed on the provider's **subject**, never the email, so a
+user changing their address at the provider does not move the account. GitHub's mapper reports
+`EmailVerified: false` rather than assuming, because its `/user` response does not say — with
+`LinkingVerifiedEmail` that means GitHub will not silently take over an account, which is the right
+way round for a claim we cannot see. Endpoints must be HTTPS, checked at construction. Social accounts
+are created with no password, and an empty hash verifies nothing, so they are reachable only through a
+linked provider. `Unlink` refuses to strand an account with no remaining credential.
+
+*Not done:* an `authhandlers` route group for the redirect and callback, and a `sqlbstore` adapter.
+Both are mechanical; neither is in this change.
+
+*Changed:* `oidc/` (new), `store/account.go` (new), `memstore/account.go` (new),
+`storetest/credentials.go`, `crypto/token.go`, `audit/audit.go`, `schema.sql`, `go.mod`
+(`golang.org/x/oauth2`). *Tests:* `oidc/oidc_test.go` against a fake provider that enforces PKCE the
+way a real one does; the linking regression was confirmed by removing the policy check.
 
 **T2.2 — Passkeys / WebAuthn.** Arguably worth more than TOTP now. `go-webauthn/webauthn` plus a
 `store.CredentialStore`. Slots in beside `twofactor.go` as a second-factor *and* as a primary factor.

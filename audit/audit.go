@@ -53,6 +53,12 @@ const (
 	EventUserEmailVerified     EventType = "user.email.verified"
 	EventUserTwoFactorEnabled  EventType = "user.twofactor.enabled"
 	EventUserTwoFactorDisabled EventType = "user.twofactor.disabled"
+	// EventAccountLinked and EventAccountUnlinked record an external
+	// identity being attached to or detached from a user. Linking is a
+	// credential grant -- afterwards, that provider can sign this account
+	// in -- so it belongs in the same trail as a password change.
+	EventAccountLinked   EventType = "user.account.linked"
+	EventAccountUnlinked EventType = "user.account.unlinked"
 
 	EventSuperuserCreated        EventType = "superuser.created"
 	EventSuperuserLoginSucceeded EventType = "superuser.login.succeeded"

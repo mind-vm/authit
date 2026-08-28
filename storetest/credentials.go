@@ -327,3 +327,115 @@ func RunSuperuserRefreshTokenStore(t *testing.T, newStore func(*testing.T) store
 		}
 	})
 }
+
+// RunAccountStore checks store.AccountStore.
+func RunAccountStore(t *testing.T, newStore func(*testing.T) store.AccountStore, fx Fixtures) {
+	mk := func(rowID, userID, provider, subject, email string) *store.Account {
+		return &store.Account{
+			ID: rowID, UserID: userID, Provider: provider, ProviderAccountID: subject,
+			Email: email, EmailVerified: true, Scopes: []string{"openid", "email"},
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}
+	}
+
+	t.Run("missing rows report ErrNotFound", func(t *testing.T) {
+		s := newStore(t)
+		_, err := s.GetAccount(ctx(), id(99))
+		requireNotFound(t, "GetAccount", err)
+		_, err = s.GetAccountByProvider(ctx(), "google", "no-such-subject")
+		// Every social sign-in makes this query, and the oidc package
+		// branches on ErrNotFound to mean "not linked yet". Any other
+		// error turns a first-time sign-in into a 500.
+		requireNotFound(t, "GetAccountByProvider", err)
+	})
+
+	t.Run("lookup is by provider and subject together", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureUser(t, id(1), id(2))
+		requireNoError(t, "create", s.CreateAccount(ctx(), mk(id(41), id(1), "google", "subject-1", "a@example.com")))
+		requireNoError(t, "create", s.CreateAccount(ctx(), mk(id(42), id(2), "github", "subject-1", "b@example.com")))
+
+		got, err := s.GetAccountByProvider(ctx(), "google", "subject-1")
+		requireNoError(t, "GetAccountByProvider", err)
+		if got.UserID != id(1) {
+			// Two providers can hand out the same subject string. Keying
+			// on the subject alone would sign the wrong person in.
+			t.Fatalf("got user %q, want %q: the provider must be part of the key", got.UserID, id(1))
+		}
+	})
+
+	t.Run("a provider subject links to at most one user", func(t *testing.T) {
+		// The UNIQUE constraint on (provider, provider_account_id). A
+		// second link for the same subject does not shadow the first --
+		// it is refused. Without this, the query above becomes a coin
+		// flip between two users, which is an account takeover.
+		s := newStore(t)
+		fx.ensureUser(t, id(1), id(2))
+		requireNoError(t, "create", s.CreateAccount(ctx(), mk(id(41), id(1), "google", "subject-1", "a@example.com")))
+		err := s.CreateAccount(ctx(), mk(id(42), id(2), "google", "subject-1", "attacker@example.com"))
+		if err == nil {
+			t.Fatal("a duplicate (provider, subject) must be refused; add a UNIQUE constraint")
+		}
+	})
+
+	t.Run("one user may link several providers", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		requireNoError(t, "create", s.CreateAccount(ctx(), mk(id(41), id(1), "google", "g-1", "a@example.com")))
+		requireNoError(t, "create", s.CreateAccount(ctx(), mk(id(42), id(1), "github", "gh-1", "a@example.com")))
+
+		list, err := s.ListAccountsByUser(ctx(), id(1))
+		requireNoError(t, "ListAccountsByUser", err)
+		if len(list) != 2 {
+			t.Fatalf("listed %d accounts, want 2", len(list))
+		}
+	})
+
+	t.Run("scopes and encrypted tokens round trip", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		a := mk(id(41), id(1), "google", "g-1", "a@example.com")
+		a.AccessTokenEncrypted = []byte{0x00, 0x01, 0xff, 0x7f}
+		a.RefreshTokenEncrypted = []byte{0xde, 0xad}
+		a.TokenExpiresAt = ptr(time.Now().Add(time.Hour))
+		requireNoError(t, "create", s.CreateAccount(ctx(), a))
+
+		got, err := s.GetAccount(ctx(), id(41))
+		requireNoError(t, "GetAccount", err)
+		if !slices.Equal(got.Scopes, []string{"openid", "email"}) {
+			t.Fatalf("Scopes = %v", got.Scopes)
+		}
+		// Ciphertext, so it must survive byte for byte -- including the
+		// zero byte, which a column typed as text will silently mangle.
+		if !slices.Equal(got.AccessTokenEncrypted, a.AccessTokenEncrypted) {
+			t.Fatalf("AccessTokenEncrypted = %v, want %v: store it as bytes, not text", got.AccessTokenEncrypted, a.AccessTokenEncrypted)
+		}
+		if got.TokenExpiresAt == nil {
+			t.Fatal("TokenExpiresAt did not persist")
+		}
+	})
+
+	t.Run("update and delete", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		a := mk(id(41), id(1), "google", "g-1", "old@example.com")
+		requireNoError(t, "create", s.CreateAccount(ctx(), a))
+
+		a.Email = "new@example.com"
+		a.EmailVerified = false
+		requireNoError(t, "UpdateAccount", s.UpdateAccount(ctx(), a))
+		got, err := s.GetAccount(ctx(), id(41))
+		requireNoError(t, "GetAccount", err)
+		if got.Email != "new@example.com" || got.EmailVerified {
+			t.Fatalf("update did not persist: %+v", got)
+		}
+
+		requireNoError(t, "DeleteAccount", s.DeleteAccount(ctx(), id(41)))
+		_, err = s.GetAccount(ctx(), id(41))
+		requireNotFound(t, "GetAccount after delete", err)
+		// Unlinking must free the subject, so the same provider identity
+		// can be linked again -- to this user or another.
+		_, err = s.GetAccountByProvider(ctx(), "google", "g-1")
+		requireNotFound(t, "GetAccountByProvider after delete", err)
+	})
+}

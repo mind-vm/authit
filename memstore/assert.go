@@ -18,4 +18,5 @@ var (
 	_ store.SuperuserRefreshTokenStore = (*SuperuserRefreshTokenStore)(nil)
 	_ store.PersonalAccessTokenStore   = (*PersonalAccessTokenStore)(nil)
 	_ store.DeviceAuthorizationStore   = (*DeviceAuthorizationStore)(nil)
+	_ store.AccountStore               = (*AccountStore)(nil)
 )

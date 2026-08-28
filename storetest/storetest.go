@@ -104,6 +104,7 @@ type Stores struct {
 	Devices            func(*testing.T) store.DeviceAuthorizationStore
 	Superusers         func(*testing.T) store.SuperuserStore
 	SuperuserTokens    func(*testing.T) store.SuperuserRefreshTokenStore
+	Accounts           func(*testing.T) store.AccountStore
 }
 
 // RunAll runs every suite for which a factory was supplied.
@@ -150,6 +151,9 @@ func RunAll(t *testing.T, s Stores) {
 	}
 	if s.SuperuserTokens != nil {
 		t.Run("SuperuserRefreshTokenStore", func(t *testing.T) { RunSuperuserRefreshTokenStore(t, s.SuperuserTokens, s.Fixtures) })
+	}
+	if s.Accounts != nil {
+		t.Run("AccountStore", func(t *testing.T) { RunAccountStore(t, s.Accounts, s.Fixtures) })
 	}
 }
 

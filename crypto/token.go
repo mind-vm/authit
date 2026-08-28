@@ -25,3 +25,18 @@ func HashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
 }
+
+// GenerateStateToken returns a random, URL-safe value for an OAuth 2.0
+// `state` parameter.
+//
+// Unlike the tokens above there is no hash to store: state is compared
+// against a copy the host kept for the duration of one redirect, not looked
+// up in a database, so there is nothing at rest to protect. It is separate
+// from GenerateOpaqueToken only so that call sites say what they mean.
+func GenerateStateToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}

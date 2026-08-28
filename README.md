@@ -29,6 +29,7 @@ authit was designed by studying two existing implementations (a full-featured bu
 | `superuser` | Operator accounts, login/refresh, deactivation, impersonation |
 | `pat` | Personal access tokens — named, scoped, optionally-expiring bearer credentials for CLIs/scripts |
 | `device` | RFC 8628 OAuth 2.0 Device Authorization Grant — "visit this URL, enter this code" CLI login |
+| `oidc` | Sign-in with an external identity provider (Google, GitHub, your SSO) |
 | `authithttp` | The only HTTP wiring authit ships: RFC-correct bearer-token extraction, validation, and 401-vs-500 classification |
 | `audit` | Opt-in security-event logging (`Logger`, `Event`, `NoopLogger`, `SlogLogger`) — every service's `Config` carries a nil-safe `AuditLogger` |
 
@@ -311,6 +312,40 @@ Three things `store/*.go` will not tell you, and the reason the reference exists
 - **Email delivery.** `user.EmailSender` is an interface; bring your own SMTP/API client.
 - **Social/OAuth login, RBAC policy engines.** Out of scope for now; `team.Role` and `store.Member.Role` are plain strings you can extend.
 
+## Social sign-in (`oidc`)
+
+`oidc` adds "sign in with Google/GitHub/your SSO" on top of authit's own accounts. It runs the OAuth 2.0 authorization code flow with PKCE and state, then asks the provider who signed in via its userinfo endpoint over TLS.
+
+```go
+svc, _ := oidc.NewService(oidc.Stores{Users: users, Accounts: accounts},
+	[]oidc.Provider{oidc.Google(clientID, clientSecret)}, oidc.Config{})
+
+// Redirect the browser; store auth.State and auth.CodeVerifier for the callback.
+auth, _ := svc.Begin(ctx, "google", "https://app.example.com/callback")
+
+// On the callback:
+res, err := svc.Complete(ctx, "google", "https://app.example.com/callback", oidc.Callback{
+	Code: r.FormValue("code"), State: r.FormValue("state"),
+	ExpectedState: storedState, CodeVerifier: storedVerifier,
+})
+// res.User is the authit account. Minting a session is yours, as with pat and device.
+```
+
+**Read `oidc.LinkingPolicy` before configuring this.** Whether a social sign-in may attach to an account that already exists with the same email is *the* security decision in social login, and it has a deliberately inconvenient default:
+
+- `LinkingManual` (the zero value) never links automatically. An unknown provider identity whose email matches an existing account is refused with `ErrAccountNotLinked`; the user signs in by the means they already have and calls `Link` deliberately. Safe regardless of which providers you enable.
+- `LinkingVerifiedEmail` links when the provider *claims* it verified the address — and is only as good as that claim. Don't use it with a provider users can register at freely.
+
+The attack: someone who can make a provider assert an address they don't own signs in, gets silently linked to the victim's account, and is now the victim. Every "sign in with X" takeover works this way.
+
+Three more things it does deliberately:
+
+- **No ID token verification.** Verifying one properly means fetching the provider's JWKS, caching it, handling rotation, and getting issuer/audience/expiry/nonce all right. A direct TLS call to userinfo establishes the same fact with the same trust, works for providers that are OAuth 2.0 but not OIDC (GitHub), and has no signature checking to get wrong. The cost is one round trip per sign-in. If you need ID-token verification specifically, this package isn't it.
+- **Provider tokens are not stored** unless you set `ProviderTokenKey`, and are AES-256-GCM encrypted when they are. A credential you don't keep can't leak.
+- **State and PKCE verifier are handed back to you**, not stored here. They belong to one browser for one minute; a short-lived `HttpOnly` cookie is the natural home, and keeping them would mean another port and a cleanup problem.
+
+Social accounts are created with no password. An empty stored hash verifies nothing — `crypto`'s dispatching `Verify` recognises no algorithm in `""` — so such an account is reachable only through a linked provider until its owner sets a password. `Unlink` refuses to remove the last thing a user can sign in with.
+
 ## Passwords
 
 Passwords are hashed with **Argon2id** at OWASP's recommended minimum (19 MiB, 2 iterations, 1 lane) and encoded in the standard PHC string format, so the parameters travel with each hash.
@@ -417,7 +452,7 @@ Leaving the field nil disables the control rather than breaking, the same shape 
 
 Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
 
-Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does), and there is no social/OIDC login. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does); `oidc` ships no HTTP route group, so the redirect and callback handlers are yours; and there is no passkey/WebAuthn support. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
 
 ## License
 
