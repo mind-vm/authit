@@ -1,7 +1,13 @@
-// Package authhandlers is an opt-in HTTP route group for authit's user
-// plane: register, login, refresh, logout, password reset, email
-// verification, two-factor auth, and session management, wired over the
-// same user.Service a host would otherwise call directly.
+// Package authhandlers is an opt-in set of HTTP route groups for authit,
+// wired over the same services a host would otherwise call directly. One
+// constructor per plane, each returning a plain http.Handler:
+//
+//	NewUserHandler       register, login, refresh, logout, password reset,
+//	                     email verification, 2FA, session management
+//	NewTeamHandler       teams, membership, roles, invitations
+//	NewSuperuserHandler  operator login and account management, impersonation
+//	NewPATHandler        the caller's own personal access tokens
+//	NewDeviceHandler     the RFC 8628 device authorization grant
 //
 // It depends on nothing beyond net/http and authit itself — no router, no
 // OpenAPI generator, no framework of any kind. NewUserHandler returns a
@@ -15,12 +21,33 @@
 // never pulls this in, and importing this never pulls anything beyond
 // authit's core in turn — the same shape as sqlbstore.
 //
-// # Scope
+// # Mount them separately
 //
-// This package covers the user plane only. team, superuser, pat, and
-// device are not wired here; a host that wants HTTP routes for those
-// follows the same pattern (a thin http.Handler over the service) itself,
-// or authhandlers grows a matching NewXHandler later.
+// They are separate handlers rather than one tree because they do not
+// belong at the same place. NewSuperuserHandler is an operator surface that
+// most deployments should keep off the public internet entirely, and
+// NewDeviceHandler speaks OAuth wire format (form-encoded requests, RFC
+// 6749 error bodies) rather than this package's own JSON conventions.
+//
+//	mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(users, verifier)))
+//	mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewTeamHandler(teams, verifier,
+//		authhandlers.RoleAuthorizer{Teams: teams})))
+//	mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewPATHandler(pats, verifier)))
+//	adminMux.Handle("/", authhandlers.NewSuperuserHandler(supers))
+//
+// # Two constructors demand an argument authit cannot supply
+//
+// NewTeamHandler requires a TeamAuthorizer, and NewDeviceHandler requires a
+// DeviceTokenIssuer and a verification URI. Both panic without them, at
+// startup rather than at the first request.
+//
+// This is deliberate. The team package does not check the caller's own role
+// -- authorization is the host's model, and it says so -- which means a
+// route group that only asked "is this request authenticated" would let any
+// user change any member's role in any team. And device.PollDeviceToken
+// resolves who approved a request without minting anything, because what
+// credential a CLI should receive is the host's decision. Neither gap can
+// be filled with a default that is safe everywhere, so neither gets one.
 //
 // # What it does not do
 //
@@ -138,8 +165,19 @@ func NewUserHandler(svc *user.Service, verifier authitjwt.Verifier, opts ...Opti
 type authedHandlerFunc func(w http.ResponseWriter, r *http.Request, claims authitjwt.Claims)
 
 func (h *UserHandler) withAuth(next authedHandlerFunc) http.HandlerFunc {
+	return requireUser(h.verifier, next)
+}
+
+// requireUser wraps a handler so it only runs for a request carrying a
+// valid user-plane bearer token, passing the resolved claims through.
+//
+// It is shared by every route group that authenticates an ordinary user.
+// The superuser group deliberately does NOT use it: those tokens carry a
+// different audience, and checking them with a plain user-plane verifier
+// would accept a user token on an operator route. See requireSuperuser.
+func requireUser(v authitjwt.Verifier, next authedHandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims, err := authithttp.Validate(h.verifier, r)
+		claims, err := authithttp.Validate(v, r)
 		if err != nil {
 			writeError(w, authithttp.StatusFor(err), "unauthorized", err.Error())
 			return

@@ -126,16 +126,32 @@ That's the whole package: `BearerToken`, `Validate`, `StatusFor`. No `http.Handl
 
 ### Ready-made HTTP routes (`authhandlers`)
 
-If you'd rather not hand-write the request/response plumbing for every `user` flow, [`authhandlers`](authhandlers) is a separate module (own `go.mod`, like `sqlbstore`) that wraps `user.Service` in a mountable route group — register, login, refresh, logout, password reset, email verification, 2FA, and session management. It depends on nothing beyond `net/http` and authit itself: no chi, no huma, no OpenAPI generator. `NewUserHandler` returns a plain `http.Handler` (a `*http.ServeMux` using Go 1.22's method+pattern routing), which you mount wherever you like:
+If you'd rather not hand-write the request/response plumbing, [`authhandlers`](authhandlers) is a separate module (own `go.mod`, like `sqlbstore`) with one mountable route group per plane. It depends on nothing beyond `net/http` and authit itself: no chi, no huma, no OpenAPI generator.
+
+| Constructor | Covers |
+|---|---|
+| `NewUserHandler` | register, login, refresh, logout, password reset, email verification, 2FA, sessions |
+| `NewTeamHandler` | teams, membership, roles, invitations |
+| `NewSuperuserHandler` | operator login, operator accounts, impersonation |
+| `NewPATHandler` | the caller's own personal access tokens |
+| `NewDeviceHandler` | the RFC 8628 device authorization grant |
 
 ```go
-import "github.com/mind-vm/authit/authhandlers"
-
 mux := http.NewServeMux()
 mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(userSvc, signer)))
+mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewTeamHandler(teamSvc, signer,
+	authhandlers.RoleAuthorizer{Teams: teamSvc})))
 ```
 
-Protected routes (session management, password change, 2FA management) validate the caller's bearer token themselves against the same `signer` you pass in — no host middleware or context key required. CORS, rate limiting, and request logging are still yours; this package stops at request/response JSON and status codes. It covers the `user` plane only for now — `team`, `superuser`, `pat`, and `device` follow the same pattern if you need routes for those too.
+They are separate handlers rather than one tree because they don't belong in the same place: the superuser group is an operator surface most deployments should keep off the public internet, and the device group speaks OAuth wire format (form-encoded requests, RFC 6749 error bodies) rather than this package's own JSON conventions.
+
+Protected routes validate the caller's bearer token themselves against the `jwt.Verifier` you pass in — no host middleware or context key required. CORS, rate limiting, and request logging are still yours.
+
+**Two constructors demand an argument authit cannot supply, and panic without it.**
+
+`NewTeamHandler` requires a `TeamAuthorizer`. The `team` package deliberately doesn't check the caller's own role, so a route group that only asked "is this request authenticated" would let any user change any member's role in any team. `RoleAuthorizer` implements the conventional rules (active member may view; active owner or admin may manage), and you can replace it — if your model has a principal that spans teams, `team.Role` has no home for it by design, so write an authorizer that consults your schema first.
+
+`NewDeviceHandler` requires a `DeviceTokenIssuer` and a verification URI. `device.PollDeviceToken` resolves *who* approved a request without minting anything, because what credential a CLI should receive is your decision; and only you know your own verification page's URL. Neither gap has a default that is safe everywhere, so neither gets one.
 
 ### Audit logging
 

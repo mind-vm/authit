@@ -66,18 +66,37 @@ func TestMemoryRefills(t *testing.T) {
 
 // TestMemoryBoundsItsKeyspace: a limiter that grows a map per distinct key
 // is itself a memory-exhaustion vector, since the attacker chooses the key.
+// MaxKeys is a hard bound, not a target -- an earlier version let the map
+// overshoot by however many keys arrived before something became
+// evictable, which made this test's ceiling depend on machine speed.
 func TestMemoryBoundsItsKeyspace(t *testing.T) {
 	ctx := context.Background()
+	const maxKeys = 50
 	m := ratelimit.NewMemory(ratelimit.MemoryConfig{
-		Burst: 1, Interval: time.Millisecond, MaxKeys: 50,
+		Burst: 1, Interval: time.Hour, MaxKeys: maxKeys,
 	})
 	for i := 0; i < 5000; i++ {
 		_ = m.Allow(ctx, fmt.Sprintf("attacker-%d", i))
 	}
-	// Eviction only reclaims fully-refilled buckets, so the ceiling is
-	// approximate; what matters is that it is a ceiling at all.
-	if got := m.Len(); got > 200 {
-		t.Fatalf("tracked %d keys after 5000 distinct ones; the map is unbounded", got)
+	if got := m.Len(); got > maxKeys {
+		t.Fatalf("tracked %d keys with MaxKeys=%d; the cap must be hard", got, maxKeys)
+	}
+}
+
+// TestMemoryFailsClosedWhenFull: once the table is full of actively-limited
+// keys, an unseen key must be refused rather than admitted untracked.
+// Admitting it would be the bypass the cap exists to prevent -- flood with
+// junk, then proceed unmetered.
+func TestMemoryFailsClosedWhenFull(t *testing.T) {
+	ctx := context.Background()
+	m := ratelimit.NewMemory(ratelimit.MemoryConfig{Burst: 1, Interval: time.Hour, MaxKeys: 4})
+	for i := 0; i < 4; i++ {
+		if err := m.Allow(ctx, fmt.Sprintf("k-%d", i)); err != nil {
+			t.Fatalf("filling the table: %v", err)
+		}
+	}
+	if err := m.Allow(ctx, "unseen"); !errors.Is(err, ratelimit.ErrRateLimited) {
+		t.Fatalf("a new key must be refused, not admitted untracked: %v", err)
 	}
 }
 

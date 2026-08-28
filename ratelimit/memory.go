@@ -18,9 +18,13 @@ type MemoryConfig struct {
 	// Defaults to 1 minute, i.e. a sustained rate of one per minute with
 	// bursts of Burst.
 	Interval time.Duration
-	// MaxKeys caps the number of tracked keys, so a caller varying the key
-	// on every request cannot grow this map without bound. Defaults to
+	// MaxKeys is a hard cap on tracked keys, so a caller varying the key on
+	// every request cannot grow this map without bound. Defaults to
 	// DefaultMaxKeys.
+	//
+	// Reaching it means every tracked key is currently under restriction,
+	// which is itself a sign of a broad attack. See Allow for what happens
+	// then; the short version is that it fails closed.
 	MaxKeys int
 }
 
@@ -66,6 +70,16 @@ func NewMemory(cfg MemoryConfig) *Memory {
 
 // Allow consumes one unit of key's budget, refusing with an *Error when
 // there is none left.
+//
+// If the table is at MaxKeys and no bucket can be evicted -- meaning every
+// tracked key is currently being limited -- a previously unseen key is
+// refused rather than admitted untracked. That is the fail-closed choice:
+// admitting it would be a bypass (flood the table with junk keys, then
+// proceed unmetered), and growing past the cap would make the limiter a
+// memory-exhaustion vector, which is exactly what the cap is for. The cost
+// is that a genuine new caller is turned away while the flood lasts. At the
+// default MaxKeys that state means 100,000 distinct keys are simultaneously
+// over their limit, so the refusal is not the biggest problem you have.
 func (m *Memory) Allow(_ context.Context, key string) error {
 	now := m.now()
 
@@ -76,6 +90,9 @@ func (m *Memory) Allow(_ context.Context, key string) error {
 	if !ok {
 		if len(m.buckets) >= m.cfg.MaxKeys {
 			m.evictFullLocked(now)
+		}
+		if len(m.buckets) >= m.cfg.MaxKeys {
+			return &Error{Key: key, RetryAfter: m.cfg.Interval}
 		}
 		b = &bucket{tokens: float64(m.cfg.Burst), last: now}
 		m.buckets[key] = b
@@ -107,9 +124,9 @@ func (m *Memory) Allow(_ context.Context, key string) error {
 // restriction are retained — precisely the ones an attacker wants
 // forgotten.
 //
-// If nothing is evictable every tracked key is actively limited, and the
-// map is at its configured ceiling by design; the new key simply joins it,
-// which is a bounded overshoot rather than unbounded growth.
+// If nothing is evictable, every tracked key is actively limited and the
+// map stays at its ceiling -- Allow then refuses the new key rather than
+// admitting it, so MaxKeys is a hard bound and not a target.
 func (m *Memory) evictFullLocked(now time.Time) {
 	for key, b := range m.buckets {
 		elapsed := now.Sub(b.last)

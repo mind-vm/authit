@@ -587,10 +587,50 @@ Services type-assert their `Stores` for it and wrap multi-write flows (`Refresh`
 `team.AcceptInvitation`, `team.CreateTeam`, `VerifyTwoFactorLogin`) when present, falling back to the
 current behaviour when absent. `sqlbstore` implements it; `memstore` does not need to.
 
-**T1.3 — Finish `authhandlers`.** Route groups for `team`, `superuser`, `pat`, and `device`, in that
-order. The `device` group should implement RFC 8628's wire format exactly (`device_code`,
-`user_code`, `verification_uri`, `interval`, and the `authorization_pending`/`slow_down` error
-bodies), since that is the part hosts will get wrong and it is fully specified.
+**T1.3 — Finish `authhandlers`.** ✅ *Done.* `NewTeamHandler`, `NewSuperuserHandler`, `NewPATHandler`
+and `NewDeviceHandler` join `NewUserHandler`, each a plain `http.Handler` over its service.
+
+The interesting part was not the plumbing. Three things had no safe default, and pretending otherwise
+would have shipped holes:
+
+- **Team authorization.** The `team` package documents at length that checking the caller's role is
+  the host's job. A route group that only verified "is this request authenticated" would therefore
+  let any user change any member's role in any team — the plumbing would look complete and be a
+  privilege-escalation hole. `NewTeamHandler` takes a required `TeamAuthorizer` and panics without
+  one, at startup. `RoleAuthorizer` ships the conventional rules and defaults to deny on any action
+  it does not recognise, so adding a `TeamAction` cannot silently open a route.
+- **Device credentials.** `PollDeviceToken` resolves who approved without minting, by design, so the
+  RFC 8628 token endpoint cannot be completed by this package alone. `NewDeviceHandler` takes a
+  required `DeviceTokenIssuer`. The verification URI is required for the same reason: `device`
+  is explicit that only the host knows its own routing.
+- **Operator audience.** The superuser group authenticates through `superuser.Service.Verify`, not
+  `authithttp.Validate`. Both planes are signed by the same key, so only the audience check separates
+  them; a plain signature check would have accepted an ordinary user's token on every operator route,
+  including `Impersonate`. Pinned by a test.
+
+Four smaller decisions worth recording, each one a place where taking the obvious input from the
+request body would have broken something:
+
+- `AcceptInvitation` takes the email from the **validated token**, never the body. The invitation's
+  email check is the only thing binding it to its recipient; a client-supplied address makes it
+  self-attested and the check worthless. The request DTO has no email field to lie with.
+- `CreateTeam` and `CreateInvitation` likewise take the caller's identity from claims, not the body.
+- Revoking an invitation verifies it belongs to the team named in the path — authorization passes on
+  the path's team, so without that check an admin of one team could revoke another team's invitation.
+- `pat.ErrNotOwner` maps to **404, not 403**: "exists but is not yours" is an existence oracle.
+
+Two real bugs were found by writing the tests. `interval` truncated a sub-second duration to `0` and
+then dropped it via `omitempty` — and RFC 8628 §3.2 says a client seeing no interval assumes 5
+seconds, so configuring a *fast* poll would have produced a slower one; it now rounds up and is always
+emitted. And `GET /teams/by-slug/{slug}` is ambiguous with `GET /teams/{id}/members` under Go's
+ServeMux, which panics at construction; it became a literal `GET /teams/by-slug?slug=...`.
+
+Also fixed here: `writeServiceError` only knew `user`'s sentinels, so `ErrWeakPassword` and
+`ErrRateLimited` — both added in this tier of work — were surfacing as opaque 500s. The table now
+covers every plane, and a rate-limit refusal carries `Retry-After`.
+
+*Changed:* `authhandlers/{team,superuser,pat,device}.go` (new), `authhandlers/{authhandlers,json}.go`.
+*Tests:* `authhandlers/planes_test.go`.
 
 **T1.4 — A rate-limiting port.** ✅ *Done.* New `ratelimit` package: `Limiter` (one method),
 `Noop`, `ErrRateLimited`, a `RetryAfter` hint, and `NewMemory` — an in-process token bucket with a
@@ -621,6 +661,11 @@ Three details worth recording:
   memory-exhaustion vector, since the attacker picks the key. Eviction drops only fully-refilled
   buckets, which is lossless — a full bucket permits exactly what an absent one does — so flooding
   with junk keys cannot evict and thereby reset a bucket that is actively limiting someone.
+  `MaxKeys` is a *hard* bound: once the table is full of actively-limited keys, an unseen key is
+  refused rather than admitted untracked, because admitting it would be precisely the bypass the cap
+  exists to prevent. (Corrected during T1.3 — the first version let the map overshoot by however many
+  keys arrived before something became evictable, which is both unbounded under a sustained flood and
+  the reason its test went flaky.)
 
 *Changed:* `ratelimit/` (new), `user/config.go`, `user/errors.go`, `user/register_login.go`,
 `user/twofactor.go`, `user/password.go`, `user/email_verification.go`, `superuser/*`, `device/*`,
