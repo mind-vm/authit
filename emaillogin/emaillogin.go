@@ -92,11 +92,16 @@ type Config struct {
 	// safe here because the account is created on redemption -- proof of
 	// inbox control -- and not on request.
 	DisableSignUp bool
-	// RateLimiter throttles requests and redemptions. Nil means
-	// ratelimit.Noop. Keys:
+	// RateLimiter throttles issuing either credential, and redeeming a
+	// code. Nil means ratelimit.Noop. Keys:
 	//
 	//	email-login:request:<email>  a new link or code for an address
 	//	email-login:redeem:<email>   a code redemption attempt
+	//
+	// Redeeming a magic link is deliberately not metered. There is nothing
+	// to meter it on: the address is not known until the token resolves,
+	// so there is no key before the lookup -- and a 256-bit token does not
+	// need one, where six digits do.
 	//
 	// The request key bounds using this flow to flood somebody's inbox.
 	// The redeem key is a second line behind MaxCodeAttempts, bounding an

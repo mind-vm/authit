@@ -184,19 +184,27 @@ This is where the concrete defects are, and where the gap is not a design choice
 |---|---|---|
 | Password KDF | scrypt by default, `hash`/`verify` fully pluggable | argon2id by default, `crypto.Hasher` pluggable *(was bcrypt, hardcoded)* |
 | Password policy | configurable min/max length | composable validators, length by default *(was none)* |
-| Email normalisation | handled | **none** — `Alice@x.com` and `alice@x.com` become two accounts, or collide, depending on your store's collation |
+| Email normalisation | handled | `store.NormalizeEmail` at every entry point *(was none — `Alice@x.com` and `alice@x.com` became two accounts, or collided, depending on your store's collation)* |
 | Rate limiting | built in, per-path rules | `ratelimit.Limiter` port *(was none)* |
-| Brute-force response | rate limit | account lock (see below) |
+| Brute-force response | rate limit | derived, self-lifting temporary lockout *(was a permanent account lock)* |
 | Token signing | HS256, RS256, EdDSA, JWKS endpoint | HS256, RS256, EdDSA, JWKS + verify-only keys *(was HS256 only)* |
 
 Six of these are worth calling out precisely, because they are bugs rather than missing features.
 They are listed worst-first.
 
-> **Status:** every defect below is now **fixed** — (a), (b), (c), (f) by T0.1–T0.3, (d) by T0.8, and
-> (e)'s documentation half by T0.8; only (e)'s rate limiter remains, and it depends on T1.4. The
-> password KDF and policy rows above are closed by T0.4/T0.5. They are described below in the
-> present tense as they were found, because the reasoning is what justifies the fix and the shape of
-> the defect is what the regression tests pin. (d) and (e) are still open.
+> **Status: every defect in this section is fixed.** (a), (b), (c) and (f) by T0.1–T0.3, (d) by
+> T0.8, (e) by T0.8 for the documentation half and T1.4 for the rate limiter it depended on. The
+> password KDF and policy rows in the table above are closed by T0.4/T0.5, and email normalisation
+> by T0.6. Each item below links to the Tier 0 entry recording what was actually built.
+>
+> They are still written in the present tense, as they were found. That is deliberate: the reasoning
+> is what justifies the fix, and the shape of the defect is what the regression tests pin — a test
+> whose subject has been paraphrased away is a test nobody can check. Read this section as the
+> diagnosis, not as the current state.
+>
+> An earlier version of this note contradicted itself, claiming (d) was fixed and then that "(d) and
+> (e) are still open". If you are relying on this document to assess the library's posture, §4's
+> Tier 0 entries are the record; this section is why.
 
 **(a) The second factor has no brute-force protection at all.** This is the most serious issue in the
 codebase. `Authenticate` clears the failed-attempt counter as soon as the *password* is correct
@@ -354,12 +362,6 @@ rather than permanent, and is documented in the README.
 `TestThrottleLiftsWithoutOperatorAction`, `TestAdministrativeLockStillBlocksLogin`,
 `TestThrottleAppliesToUnknownAddresses`; `superuser/superuser_test.go`.
 
-**T0.9 — both documentation/behaviour mismatches reconciled.** ✅ *Done.* §2.7(f) fell out of T0.3
-(the derived lockout is keyed by email, so it is genuinely evaluated before the user lookup, as the
-comment always claimed). §2.7(e) is closed by T1.4 below: `crypto/usercode.go` named rate limiting as
-the control its low entropy depends on without saying who supplies it, and `device.Config.RateLimiter`
-now supplies the half that only authit can.
-
 **T0.4 — Make password hashing pluggable, and default to argon2id.** ✅ *Done.* `crypto.Hasher`
 (`Hash`/`Verify`/`NeedsRehash`) with `crypto.Argon2idHasher` (the new default, OWASP minimum
 parameters, PHC string encoding so the parameters travel with each hash) and `crypto.BcryptHasher`.
@@ -477,103 +479,6 @@ defence in depth, and is documented as such.
 comment always claimed). §2.7(e) is closed by T1.4 below: `crypto/usercode.go` named rate limiting as
 the control its low entropy depends on without saying who supplies it, and `device.Config.RateLimiter`
 now supplies the half that only authit can.
-
-**T0.4 — Make password hashing pluggable, and default to argon2id.** ✅ *Done.* `crypto.Hasher`
-(`Hash`/`Verify`/`NeedsRehash`) with `crypto.Argon2idHasher` (the new default, OWASP minimum
-parameters, PHC string encoding so the parameters travel with each hash) and `crypto.BcryptHasher`.
-Both dispatch `Verify` on the hash's own prefix, so either accepts anything authit has ever written —
-without that property, changing the hasher would lock out every existing user. `Authenticate` on both
-planes re-hashes after a successful password check when `NeedsRehash` reports the stored hash is
-weaker than current settings, so an existing bcrypt corpus migrates itself with no migration script.
-Best-effort: the stored hash stays valid if the rewrite fails, so it can never fail a login.
-*Changed:* `crypto/hasher.go` (new), `user/config.go`, `user/register_login.go`, `user/password.go`,
-`superuser/service.go`, `superuser/auth.go`, `user/errors.go`, `superuser/errors.go`.
-*Tests:* `crypto/hasher_test.go` (round trip, cross-format verification, `NeedsRehash` thresholds,
-malformed input), `user/hashing_test.go` (`TestPasswordHashUpgradesOnLogin`,
-`TestUpgradeDoesNotHappenForCurrentHashes`), `superuser/superuser_test.go`.
-
-**T0.5 — Add a password policy seam.** ✅ *Done*, in `crypto` rather than `user` so both planes share
-one type: `crypto.PasswordValidator`, with `LengthPolicy`, `NotEmailPolicy` and `AllPolicies` as
-composable pieces and `DefaultPasswordPolicy()` (12–1024 runes) as the non-nil default. Enforced on
-`Register`, `ChangePassword`, `ResetPassword` and `createSuperuser`.
-
-Two decisions worth recording:
-
-- **The policy is not consulted on login.** Raising it must not lock out the users it was raised to
-  protect. Pinned by `TestPasswordPolicyIsNotAppliedOnLogin`.
-- **Length only, by default.** Composition rules reduce entropy by steering people toward predictable
-  substitutions, and a breach-list check needs a corpus authit should not ship. `AllPolicies` is the
-  seam for adding one.
-
-Length is counted in runes, not bytes, so a 12-character minimum does not silently demand 12 bytes of
-a script whose characters are three bytes each. The maximum exists because a password is
-attacker-controlled input to a deliberately expensive function.
-
-*Changed:* `crypto/policy.go` (new), `user/config.go`, `user/register_login.go`, `user/password.go`,
-`superuser/service.go`. *Tests:* `crypto/hasher_test.go`, `user/hashing_test.go`.
-
-> **Note for existing consumers:** T0.5 is the one change in this tier that can break a working
-> application at runtime rather than at compile time — any account whose password is under 12
-> characters can no longer change or reset it to the same value, and seeded/test fixtures with short
-> passwords will start failing at `Register`. Set `PasswordValidator` explicitly to keep the old
-> behaviour. The repo's own test fixtures were updated rather than the default weakened.
-
-**T0.6 — Normalise email on the way in.** ✅ *Done.* `store.NormalizeEmail` (trim + lower-case),
-applied at the entry point of every method that takes an address: `Register`, `Authenticate`,
-`RequestPasswordReset`, `RequestEmailVerificationByEmail`, `createSuperuser`, `superuser.Authenticate`,
-`team.CreateInvitation` and `team.AcceptInvitation`.
-
-It lives in `store` because the invariant is a storage-contract statement — *the value authit writes
-to and queries the email column with is always this form* — which means an implementation needs no
-`citext`, no `lower()` index and no case-insensitive collation. Previously authit's behaviour on
-`Alice@` vs `alice@` was decided entirely by the host's collation: one account or two, silently.
-
-The security half is less obvious than the duplicate-account half: the failed-login counter is keyed
-by email, so before this an attacker could reset their own throttle just by varying capitalisation.
-`TestThrottleCannotBeResetByVaryingCase` pins it.
-
-Lower-casing the whole address is formally lossy — RFC 5321 makes the local part case-sensitive — but
-it matches what providers do, and letting case create duplicate accounts is the worse failure.
-Dot-stripping and `+tag` removal are deliberately absent: Gmail-specific, and they merge genuinely
-distinct addresses elsewhere.
-
-*Note for existing consumers:* rows written before this need a one-time
-`UPDATE ... SET email = lower(btrim(email))`, documented on `NormalizeEmail` and in the README.
-*Changed:* `store/email.go` (new), `user/register_login.go`, `user/password.go`,
-`user/email_verification.go`, `superuser/auth.go`, `superuser/service.go`, `team/invitations.go`.
-*Tests:* `user/normalization_test.go`, `superuser/superuser_test.go`.
-
-**T0.7 — Refresh-token reuse detection.** ✅ *Done.* A revoked-but-unexpired refresh token presented
-to `Refresh` now revokes every refresh token the principal holds and emits `EventUserTokenReuse` /
-`EventSuperuserTokenReuse`. Rotation means the legitimate holder never re-sends a spent token, so a
-second use means two parties hold it — and nothing at that point can distinguish them, so both are
-forced back through a password login, which only one of them can complete.
-
-Three decisions:
-
-- **The error stays `ErrInvalidToken`**, byte-identical to what a garbage token returns. A distinct
-  error would confirm to an attacker that a stolen token was genuine and already spent — exactly the
-  fact worth withholding. `TestRefreshReuseIsIndistinguishableFromGarbage` pins it.
-- **Expired tokens do not trip it.** An expired token is not evidence of theft and must not take the
-  user's other sessions down.
-- **A replayed logged-out token does trip it**, an accepted false positive: distinguishing it would
-  need a revocation-reason column, and the session was over anyway. Documented rather than hidden,
-  since it puts noise in the audit trail.
-
-*Changed:* `user/register_login.go`, `superuser/auth.go`, `audit/audit.go`.
-*Tests:* `user/refresh_reuse_test.go`, `superuser/superuser_test.go`. The user-plane test was
-confirmed to fail against the previous implementation.
-
-**T0.8 — Add an asymmetric signer.**
-`jwt.NewRS256Signer(privateKey)` / `jwt.NewEd25519Signer(...)`, plus a **verify-only** type
-(`jwt.Verifier` with just `Verify`/`Validate`) so downstream services get a key that cannot mint. A
-small `jwt.JWKS(pub) ([]byte, error)` helper covers the rest. `authithttp.Validate` should take the
-narrower `Verifier` interface, not `Signer`.
-*Touches:* `jwt/signer.go`, `authithttp/validate.go`.
-
-**T0.9 — Reconcile the two documentation/behaviour mismatches** in §2.7(e) and §2.7(f): either ship
-the device-code rate limiting the comment promises (it falls out of T1.4) or restate the requirement
-at the API surface, and either check lockout before the user lookup as documented or delete the claim.
 
 ### Tier 1 — close the adoption gap without changing what authit is
 
@@ -1144,11 +1049,18 @@ on schema ownership, and the right call for hosts that already have a database. 
 from better-auth in kind — storage ports, a structurally separate operator plane, identity-resolving
 CLI credentials — is worth keeping, and no item in this plan erodes it.
 
-But the honest headline is not the feature comparison. It is that the second factor is currently
-un-rate-limited (§2.7a) while the first factor is rate-limited into a denial-of-service vector
-(§2.7c), and that backup codes carry 32 bits (§2.7b). Those three, plus a password policy, are the
-difference between a library that is early and a library that is unsafe — and the README's "early
-scaffold" note does not currently say so.
+When this document was written the honest headline was not the feature comparison. It was that the
+second factor was un-rate-limited (§2.7a) while the first factor was rate-limited into a
+denial-of-service vector (§2.7c), and that backup codes carried 32 bits (§2.7b) — three things that
+were the difference between a library that is early and one that is unsafe.
 
-Fix Tier 0. Then decide about social login (T2.1) as its own question. Porting anything else from
-better-auth is optimising the wrong axis.
+**All of Tier 0 is now fixed, and Tier 1 with it.** Tier 2 stands at T2.1–T2.3 plus T2.6; T2.4 and
+T2.5 are unstarted, and Tier 3 is untouched. A later security review of that work found four more
+issues, all fixed and recorded in Tier 4 — the largest of them, a passkey account takeover, existed
+only because of code added by this plan, which is the argument for reviewing hardening work rather
+than trusting it.
+
+What that leaves is a library whose headline risk is no longer a list of defects but the ordinary
+one: it is young, and the parts of it verified against a real database are still fewer than the
+parts verified only against an in-memory fake. Decide about T2.4 on its merits. Porting anything
+else from better-auth is still optimising the wrong axis.
