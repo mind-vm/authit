@@ -2,6 +2,7 @@ package passkey_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -352,5 +353,78 @@ func TestLoginWithNoCredentials(t *testing.T) {
 	f := newFixture(t, passkey.Config{})
 	if _, _, err := f.svc.BeginLogin(context.Background(), f.user.ID); !errors.Is(err, passkey.ErrNoCredentials) {
 		t.Fatalf("expected ErrNoCredentials, got %v", err)
+	}
+}
+
+// TestSessionCannotSupplyItsOwnOrigin is the property TestWrongOriginIsRejected
+// only half covers.
+//
+// wan.SessionData carries per-ceremony overrides for the origin allowlist
+// and the RP id, and the library prefers them over Config at verification
+// time. So a caller who can edit the session does not have to defeat the
+// origin check -- it substitutes its own one-entry allowlist and is checked
+// against that. TestWrongOriginIsRejected misses this because it hands back
+// the server's own session, where Origin is empty.
+//
+// Config.RPOrigins is documented as what stops a page on another site from
+// driving the authenticator, so this must hold for a tampered session too.
+func TestSessionCannotSupplyItsOwnOrigin(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, passkey.Config{})
+	auth := f.enroll(t, "Test Key")
+	auth.signCount++
+
+	opts, sess, err := f.svc.BeginLogin(ctx, f.user.ID)
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+
+	// The attacker rewrites the session to allow their own origin, which
+	// is exactly what a forgeable ceremony cookie hands them.
+	var raw map[string]any
+	if err := json.Unmarshal(sess, &raw); err != nil {
+		t.Fatalf("unmarshal session: %v", err)
+	}
+	raw["origin"] = "https://evil.example"
+	raw["rpId"] = testRPID
+	tampered, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal session: %v", err)
+	}
+
+	r := auth.assert(t, challengeFrom(t, opts), testRPID, "https://evil.example", f.user.ID)
+	if _, err := f.svc.FinishLogin(ctx, f.user.ID, tampered, r); !errors.Is(err, passkey.ErrCeremony) {
+		t.Fatalf("a session-supplied origin must not widen RPOrigins, got %v", err)
+	}
+}
+
+// TestSessionWithoutAnExpiryIsRejected. The library skips the expiry check
+// entirely when Expires is zero, so a session without one never times out
+// -- which turns a 60-second ceremony into an indefinite one for anyone who
+// can edit the session. Both Begin calls set it, so an absent expiry did
+// not come from here.
+func TestSessionWithoutAnExpiryIsRejected(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, passkey.Config{})
+	auth := f.enroll(t, "Test Key")
+	auth.signCount++
+
+	opts, sess, err := f.svc.BeginLogin(ctx, f.user.ID)
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(sess, &raw); err != nil {
+		t.Fatalf("unmarshal session: %v", err)
+	}
+	delete(raw, "expires")
+	tampered, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal session: %v", err)
+	}
+
+	r := auth.assert(t, challengeFrom(t, opts), testRPID, testOrigin, f.user.ID)
+	if _, err := f.svc.FinishLogin(ctx, f.user.ID, tampered, r); !errors.Is(err, passkey.ErrSession) {
+		t.Fatalf("a session with no expiry must be refused, got %v", err)
 	}
 }

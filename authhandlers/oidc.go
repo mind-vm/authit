@@ -60,8 +60,12 @@ func NewOIDCHandler(svc *oidc.Service, verifier authitjwt.Verifier, issuer Sessi
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if len(o.ceremonyKey) == 0 {
+		panic("authit/authhandlers: NewOIDCHandler requires WithCeremonyKey; " +
+			"the ceremony cookie carries the state and PKCE verifier the callback is checked against")
+	}
 	h := &OIDCHandler{
-		ceremonyBase: ceremonyBase{issuer: issuer, cookiePath: "/", insecure: o.insecure},
+		ceremonyBase: ceremonyBase{issuer: issuer, cookiePath: "/", insecure: o.insecure, key: o.ceremonyKey},
 		svc:          svc, verifier: verifier, redirectURI: redirectURI,
 	}
 
@@ -95,7 +99,7 @@ func (h *OIDCHandler) callback(w http.ResponseWriter, r *http.Request) {
 	// replayed against a second callback.
 	defer h.clearCeremonyCookie(w, oidcStateCookie, http.SameSiteLaxMode)
 
-	raw, ok := readCeremonyCookie(r, oidcStateCookie)
+	raw, ok := h.readCeremonyCookie(r, oidcStateCookie)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "state_missing",
 			"no in-flight sign-in for this browser")

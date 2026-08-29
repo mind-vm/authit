@@ -1,6 +1,8 @@
 package authhandlers
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -45,6 +47,8 @@ type ceremonyBase struct {
 	// own subtree, so it is not attached to every request to the origin.
 	cookiePath string
 	insecure   bool
+	// key authenticates the ceremony cookie. See WithCeremonyKey.
+	key []byte
 }
 
 // ceremonyTTL bounds how long a half-finished ceremony stays resumable.
@@ -67,7 +71,7 @@ const ceremonyTTL = 10 * time.Minute
 func (h *ceremonyBase) setCeremonyCookie(w http.ResponseWriter, name string, value []byte, sameSite http.SameSite) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
-		Value:    base64.RawURLEncoding.EncodeToString(value),
+		Value:    base64.RawURLEncoding.EncodeToString(h.sign(name, value)),
 		Path:     h.cookiePath,
 		MaxAge:   int(ceremonyTTL.Seconds()),
 		Secure:   !h.insecure,
@@ -76,17 +80,43 @@ func (h *ceremonyBase) setCeremonyCookie(w http.ResponseWriter, name string, val
 	})
 }
 
-// readCeremonyCookie reads and decodes ceremony state.
-func readCeremonyCookie(r *http.Request, name string) ([]byte, bool) {
+// sign prefixes value with an HMAC over the cookie's name and contents.
+//
+// The cookie is state the browser holds and hands back, and every flow
+// here trusts what comes back: the OAuth state and PKCE verifier the
+// callback is checked against, or the WebAuthn challenge the signature is
+// checked against. Unauthenticated, that is not storage, it is an input --
+// a caller with curl writes whatever it likes into it and the ceremony
+// verifies against the attacker's own expectations.
+//
+// The name is inside the MAC so that a cookie minted for one ceremony
+// cannot be presented as another. Registration and login already use
+// separate names for that reason; without binding, the names are only a
+// convention the client is free to ignore.
+func (h *ceremonyBase) sign(name string, value []byte) []byte {
+	mac := hmac.New(sha256.New, h.key)
+	mac.Write([]byte(name))
+	mac.Write([]byte{0})
+	mac.Write(value)
+	return mac.Sum(value[:len(value):len(value)])
+}
+
+// readCeremonyCookie reads ceremony state, rejecting anything this server
+// did not sign.
+func (h *ceremonyBase) readCeremonyCookie(r *http.Request, name string) ([]byte, bool) {
 	c, err := r.Cookie(name)
 	if err != nil || c.Value == "" {
 		return nil, false
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(c.Value)
-	if err != nil || len(raw) == 0 {
+	if err != nil || len(raw) <= sha256.Size {
 		return nil, false
 	}
-	return raw, true
+	value, sum := raw[:len(raw)-sha256.Size], raw[len(raw)-sha256.Size:]
+	if !hmac.Equal(sum, h.sign(name, value)[len(value):]) {
+		return nil, false
+	}
+	return value, true
 }
 
 // clearCeremonyCookie expires it. The attributes must match the ones it was

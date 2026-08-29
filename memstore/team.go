@@ -114,7 +114,14 @@ func (s *MemberStore) GetMemberByUserAndTeam(_ context.Context, userID, teamID s
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, id := range s.byUserID[userID] {
-		if m := s.byID[id]; m.TeamID == teamID {
+		// Skip rather than dereference: the secondary indexes are
+		// append-only within one lock, so a caller reading through them
+		// must tolerate an id byID no longer holds.
+		m, ok := s.byID[id]
+		if !ok {
+			continue
+		}
+		if m.TeamID == teamID {
 			cp := *m
 			return &cp, nil
 		}
@@ -127,7 +134,11 @@ func (s *MemberStore) ListMembersByTeam(_ context.Context, teamID string) ([]*st
 	defer s.mu.RUnlock()
 	var out []*store.Member
 	for _, id := range s.byTeamID[teamID] {
-		cp := *s.byID[id]
+		m, ok := s.byID[id]
+		if !ok {
+			continue
+		}
+		cp := *m
 		out = append(out, &cp)
 	}
 	return out, nil
@@ -158,11 +169,29 @@ func (s *MemberStore) UpdateMember(_ context.Context, m *store.Member) error {
 func (s *MemberStore) DeleteMember(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.byID[id]; !ok {
+	m, ok := s.byID[id]
+	if !ok {
 		return store.ErrNotFound
 	}
 	delete(s.byID, id)
+	// Both secondary indexes have to lose the id too. Leaving it in
+	// byTeamID meant ListMembersByTeam dereferenced a row that byID no
+	// longer had -- a nil map value, so a panic rather than a wrong
+	// answer, on the next read after any removal.
+	s.byTeamID[m.TeamID] = removeID(s.byTeamID[m.TeamID], id)
+	if m.UserID != nil {
+		s.byUserID[*m.UserID] = removeID(s.byUserID[*m.UserID], id)
+	}
 	return nil
+}
+
+func removeID(ids []string, id string) []string {
+	for i, v := range ids {
+		if v == id {
+			return append(ids[:i:i], ids[i+1:]...)
+		}
+	}
+	return ids
 }
 
 // InvitationStore is an in-memory store.InvitationStore.

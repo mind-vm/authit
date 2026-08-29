@@ -380,6 +380,27 @@ func marshalCeremony(options any, session *wan.SessionData) (Options, Session, e
 	return opts, sess, nil
 }
 
+// decodeSession parses a Session and strips the fields that must never
+// come from it.
+//
+// wan.SessionData carries per-ceremony overrides for the origin allowlist
+// and the relying party id, and the library prefers them over its own
+// configuration at verification time -- GetOrigins returns []string{Origin}
+// whenever Origin is set, and validateLogin resolves both through the
+// session rather than the Config. authit never sets either at Begin, so a
+// session arriving with them populated did not come from here.
+//
+// That matters because Config.RPOrigins is documented as the thing that
+// stops a page on another site from driving your authenticator, and a
+// caller able to substitute the session could otherwise supply its own
+// one-entry allowlist and be checked against that instead. The Session
+// doc says it must not be attacker-controlled and it means it -- but a
+// guarantee that survives only correct storage is one this package can
+// enforce itself, for one line, so it does.
+//
+// Expires is required for the same reason: the library skips the expiry
+// check entirely when it is zero, so a session without one never times
+// out. Both Begin calls set it, because Timeouts.Enforce is on.
 func decodeSession(sess Session) (wan.SessionData, error) {
 	var out wan.SessionData
 	if len(sess) == 0 {
@@ -388,6 +409,11 @@ func decodeSession(sess Session) (wan.SessionData, error) {
 	if err := json.Unmarshal(sess, &out); err != nil {
 		return out, ErrSession
 	}
+	if out.Expires.IsZero() {
+		return wan.SessionData{}, ErrSession
+	}
+	out.Origin = ""
+	out.RelyingPartyID = ""
 	return out, nil
 }
 

@@ -2,6 +2,7 @@ package authhandlers_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,18 @@ func testSigner(t *testing.T) *authitjwt.HMACSigner {
 		t.Fatalf("NewHMACSigner: %v", err)
 	}
 	return signer
+}
+
+// userToken mints an access token for the protected routes.
+func userToken(t *testing.T) string {
+	t.Helper()
+	claims := authitjwt.Claims{Email: "user@example.com"}
+	claims.Subject = "user-1"
+	tok, err := testSigner(t).Generate(claims)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	return tok
 }
 
 // echoIssuer stands in for a host minting a session. It records what it was
@@ -174,7 +187,8 @@ func newOIDCServer(t *testing.T) (http.Handler, *oidc.Service) {
 	}
 	iss := &echoIssuer{}
 	h := authhandlers.NewOIDCHandler(svc, testSigner(t), iss.issue(),
-		func(*http.Request, string) string { return "https://app.example/callback" })
+		func(*http.Request, string) string { return "https://app.example/callback" },
+		authhandlers.WithCeremonyKey(testCeremonyKey))
 	return h, svc
 }
 
@@ -259,10 +273,12 @@ func TestOIDCRequiresAnIssuerAndRedirectURI(t *testing.T) {
 	for name, run := range map[string]func(){
 		"no issuer": func() {
 			authhandlers.NewOIDCHandler(svc, testSigner(t), nil,
-				func(*http.Request, string) string { return "x" })
+				func(*http.Request, string) string { return "x" },
+				authhandlers.WithCeremonyKey(testCeremonyKey))
 		},
 		"no redirect uri": func() {
-			authhandlers.NewOIDCHandler(svc, testSigner(t), iss.issue(), nil)
+			authhandlers.NewOIDCHandler(svc, testSigner(t), iss.issue(), nil,
+				authhandlers.WithCeremonyKey(testCeremonyKey))
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -276,11 +292,21 @@ func TestOIDCRequiresAnIssuerAndRedirectURI(t *testing.T) {
 	}
 }
 
+// testCeremonyKey signs the ceremony cookies in these tests. A real host
+// supplies its own; see authhandlers.WithCeremonyKey.
+var testCeremonyKey = []byte("test-ceremony-key-not-for-production")
+
 // ---------------------------------------------------------------------------
 // passkey
 // ---------------------------------------------------------------------------
 
 func newPasskeyServer(t *testing.T) http.Handler {
+	t.Helper()
+	h, _ := newPasskeyServerWithService(t)
+	return h
+}
+
+func newPasskeyServerWithService(t *testing.T) (http.Handler, *passkey.Service) {
 	t.Helper()
 	svc, err := passkey.NewService(passkey.Stores{
 		Users: memstore.NewUserStore(), Credentials: memstore.NewWebAuthnCredentialStore(),
@@ -292,7 +318,8 @@ func newPasskeyServer(t *testing.T) http.Handler {
 		t.Fatalf("passkey.NewService: %v", err)
 	}
 	iss := &echoIssuer{}
-	return authhandlers.NewPasskeyHandler(svc, testSigner(t), iss.issue())
+	return authhandlers.NewPasskeyHandler(svc, testSigner(t), iss.issue(),
+		authhandlers.WithCeremonyKey(testCeremonyKey)), svc
 }
 
 // TestPasskeyLoginBeginIsPublicAndSetsAStrictCookie. Unlike the OAuth
@@ -361,5 +388,105 @@ func TestPasskeyRequiresAnIssuer(t *testing.T) {
 			t.Fatal("a nil SessionIssuer must be refused at construction")
 		}
 	}()
-	authhandlers.NewPasskeyHandler(svc, testSigner(t), nil)
+	authhandlers.NewPasskeyHandler(svc, testSigner(t), nil,
+		authhandlers.WithCeremonyKey(testCeremonyKey))
+}
+
+// TestForgedCeremonyCookieIsRejected is the property that decides whether
+// the ceremony state is storage or an input.
+//
+// The cookie carries the WebAuthn challenge the assertion is checked
+// against, and -- until it was signed -- nothing stopped a caller from
+// writing one itself. That is not a cookie-theft scenario and HttpOnly does
+// not touch it: the attacker never needs the victim's browser to hold or
+// send anything, it mints the Cookie header with curl. A forged ceremony
+// lets the caller choose the challenge, the expiry, and (before the passkey
+// package stripped them) the origin allowlist the signature is verified
+// against.
+//
+// The forged cookie carries a *complete and genuine* session payload, just
+// without the MAC. That matters: a malformed one is refused by
+// decodeSession, which reports ErrSession and therefore the same
+// ceremony_missing this asserts -- so a cruder forgery passes this test
+// whether or not the cookie is authenticated at all. Reusing a real payload
+// leaves the signature as the only thing standing between the request and
+// the ceremony.
+func TestForgedCeremonyCookieIsRejected(t *testing.T) {
+	h, svc := newPasskeyServerWithService(t)
+
+	// A genuine session, minted straight from the service and encoded the
+	// way a caller with curl would encode it: raw, unsigned. Deriving it
+	// from a real Set-Cookie instead would mean stripping whatever the
+	// implementation appends, which makes the forgery track the code it is
+	// supposed to be testing -- strip 32 bytes from an unsigned cookie and
+	// the leftover is malformed, refused by decodeSession, and the test
+	// passes for a reason that has nothing to do with the MAC.
+	_, sess, err := svc.BeginDiscoverableLogin(context.Background())
+	if err != nil {
+		t.Fatalf("BeginDiscoverableLogin: %v", err)
+	}
+	forged := base64.RawURLEncoding.EncodeToString(sess)
+
+	r := httptest.NewRequest("POST", "/passkeys/login/finish", strings.NewReader("{}"))
+	r.Header.Set("Content-Type", "application/json")
+	r.AddCookie(&http.Cookie{Name: "authit_passkey_login", Value: forged})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("a cookie this server did not sign got %d, want 400: %s", w.Code, w.Body)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "ceremony_missing") {
+		t.Fatalf("an unsigned cookie must be indistinguishable from an absent one, got %s", body)
+	}
+}
+
+// TestCeremonyCookieIsBoundToItsName. Registration and login use separate
+// cookie names so a half-finished registration cannot be presented to the
+// login endpoint. Without the name inside the MAC that separation is only a
+// convention the client is free to ignore -- it renames its own cookie and
+// the signature still checks out.
+func TestCeremonyCookieIsBoundToItsName(t *testing.T) {
+	h := newPasskeyServer(t)
+	begin := do(t, h, "POST", "/passkeys/login/begin", "", nil)
+	var login string
+	for _, c := range begin.Result().Cookies() {
+		if c.Name == "authit_passkey_login" {
+			login = c.Value
+		}
+	}
+	if login == "" {
+		t.Fatal("expected a login ceremony cookie")
+	}
+
+	// The same bytes, presented under the registration cookie's name.
+	r := httptest.NewRequest("POST", "/me/passkeys/register/finish", strings.NewReader("{}"))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+userToken(t))
+	r.AddCookie(&http.Cookie{Name: "authit_passkey_register", Value: login})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "ceremony_missing") {
+		t.Fatalf("a login cookie presented as a registration cookie got %d: %s", w.Code, w.Body)
+	}
+}
+
+// TestCeremonyKeyIsRequired. There is no safe default: a per-process key
+// breaks across replicas and restarts, and anything derivable here is
+// derivable by an attacker. Refused at construction rather than at the
+// first ceremony.
+func TestCeremonyKeyIsRequired(t *testing.T) {
+	svc, err := passkey.NewService(passkey.Stores{
+		Users: memstore.NewUserStore(), Credentials: memstore.NewWebAuthnCredentialStore(),
+	}, passkey.Config{RPID: "example.com", RPOrigins: []string{"https://example.com"}})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	iss := &echoIssuer{}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("a missing ceremony key must be refused at construction")
+		}
+	}()
+	authhandlers.NewPasskeyHandler(svc, testSigner(t), iss.issue())
 }

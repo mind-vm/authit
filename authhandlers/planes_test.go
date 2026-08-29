@@ -588,3 +588,76 @@ func TestDevicePollingTooFastIsSlowDown(t *testing.T) {
 		t.Fatalf("a poll inside the interval = %v, want slow_down", got)
 	}
 }
+
+// TestAdminCannotBecomeOwnerAndEvictTheFounder.
+//
+// RoleAuthorizer grants owner and admin the same TeamActionManageMembers,
+// and the only invariant the team package enforces about owners is that the
+// last one cannot be removed. An admin who can grant the owner role
+// manufactures the second owner that guard is counting, and the founder
+// stops being the last one -- so a role the library treats as the top of
+// the team is reachable from below it, and the founder can then be removed
+// with no way back in.
+//
+// Both routes that can grant it are covered. Gating only the role change
+// would leave the same result available to any admin with a second address:
+// AcceptInvitation copies the invitation's role onto the new member
+// verbatim.
+func TestAdminCannotBecomeOwnerAndEvictTheFounder(t *testing.T) {
+	ctx := context.Background()
+	p := newPlanes(t)
+	h := authhandlers.NewTeamHandler(p.teams, p.signer, authhandlers.RoleAuthorizer{Teams: p.teams})
+
+	ownerID, ownerToken := p.login(t, "founder@example.com")
+	adminUserID, adminToken := p.login(t, "admin@example.com")
+
+	tm, err := p.teams.CreateTeam(ctx, "Acme", "acme", ownerID, "Founder", "founder@example.com")
+	if err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+	raw, _, err := p.teams.CreateInvitation(ctx, tm.ID, "", "admin@example.com", store.RoleAdmin)
+	if err != nil {
+		t.Fatalf("CreateInvitation: %v", err)
+	}
+	admin, err := p.teams.AcceptInvitation(ctx, raw, adminUserID, "admin@example.com", "Admin")
+	if err != nil {
+		t.Fatalf("AcceptInvitation: %v", err)
+	}
+	founder, err := p.teams.GetMemberByUserAndTeam(ctx, ownerID, tm.ID)
+	if err != nil {
+		t.Fatalf("GetMemberByUserAndTeam: %v", err)
+	}
+
+	// The admin is a real admin: ordinary member management still works,
+	// so this is a check on the owner role and not a blanket refusal.
+	if w := do(t, h, "POST", "/teams/"+tm.ID+"/invitations", adminToken,
+		map[string]string{"email": "colleague@example.com", "role": "member"}); w.Code != http.StatusCreated {
+		t.Fatalf("an admin must still be able to invite a member: %d %s", w.Code, w.Body)
+	}
+
+	// Route 1: promote yourself.
+	if w := do(t, h, "PATCH", "/members/"+admin.ID+"/role", adminToken,
+		map[string]string{"role": "owner"}); w.Code != http.StatusForbidden {
+		t.Fatalf("an admin granting itself owner got %d, want 403: %s", w.Code, w.Body)
+	}
+	// Route 2: invite a second identity as owner.
+	if w := do(t, h, "POST", "/teams/"+tm.ID+"/invitations", adminToken,
+		map[string]string{"email": "admin-alt@example.com", "role": "owner"}); w.Code != http.StatusForbidden {
+		t.Fatalf("an admin inviting an owner got %d, want 403: %s", w.Code, w.Body)
+	}
+	// And the founder cannot be pushed out directly either.
+	if w := do(t, h, "DELETE", "/members/"+founder.ID, adminToken, nil); w.Code != http.StatusForbidden {
+		t.Fatalf("an admin removing the owner got %d, want 403: %s", w.Code, w.Body)
+	}
+	if w := do(t, h, "PATCH", "/members/"+founder.ID+"/active", adminToken,
+		map[string]bool{"is_active": false}); w.Code != http.StatusForbidden {
+		t.Fatalf("an admin deactivating the owner got %d, want 403: %s", w.Code, w.Body)
+	}
+
+	// The owner may still do all of it -- the new action is a restriction
+	// on admins, not a lock on the team.
+	if w := do(t, h, "PATCH", "/members/"+admin.ID+"/role", ownerToken,
+		map[string]string{"role": "owner"}); w.Code != http.StatusNoContent {
+		t.Fatalf("an owner granting owner got %d, want 204: %s", w.Code, w.Body)
+	}
+}

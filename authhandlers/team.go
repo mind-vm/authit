@@ -28,6 +28,21 @@ const (
 	// TeamActionManageInvitations covers creating, listing and revoking
 	// invitations.
 	TeamActionManageInvitations TeamAction = "manage_invitations"
+	// TeamActionManageOwners covers granting the owner role, and
+	// mutating a member who already holds it.
+	//
+	// It is separate from TeamActionManageMembers because owner is the one
+	// role authit itself gives meaning to: the last-owner guards in the
+	// team package are the only invariant the library enforces about who
+	// controls a team. An authorizer that grants member management to
+	// admins is granting the power to add and remove colleagues; it is not
+	// necessarily granting the power to become the owner and evict the
+	// founder, and before this action existed it could not tell the two
+	// apart.
+	//
+	// A TeamAuthorizer written before this constant will fall to its
+	// default case and deny, which is the safe direction.
+	TeamActionManageOwners TeamAction = "manage_owners"
 )
 
 // TeamAuthorizer decides whether a caller may perform an action on a team.
@@ -69,6 +84,15 @@ func (a RoleAuthorizer) Authorize(ctx context.Context, callerUserID, teamID stri
 		return nil
 	case TeamActionManageMembers, TeamActionManageInvitations:
 		if m.Role == store.RoleOwner || m.Role == store.RoleAdmin {
+			return nil
+		}
+		return ErrForbidden
+	case TeamActionManageOwners:
+		// Owners only. An admin who could grant this role could grant it
+		// to themselves and then remove the owner -- the last-owner guard
+		// stops the removal only while one owner remains, and a
+		// self-promotion is what supplies the second.
+		if m.Role == store.RoleOwner {
 			return nil
 		}
 		return ErrForbidden
@@ -263,6 +287,14 @@ func (h *TeamHandler) updateMemberRole(w http.ResponseWriter, r *http.Request, c
 	if !h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageMembers) {
 		return
 	}
+	// Granting owner, or touching someone who already is one, is a
+	// separate decision from ordinary member management. Both directions
+	// are checked: the grant is what manufactures a second owner, and the
+	// demotion is how the first one is disposed of afterwards.
+	if (store.Role(req.Role) == store.RoleOwner || m.Role == store.RoleOwner) &&
+		!h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageOwners) {
+		return
+	}
 	if err := h.svc.UpdateMemberRole(r.Context(), m.ID, store.Role(req.Role)); err != nil {
 		writeServiceError(w, err)
 		return
@@ -283,6 +315,9 @@ func (h *TeamHandler) setMemberActive(w http.ResponseWriter, r *http.Request, cl
 	if !h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageMembers) {
 		return
 	}
+	if m.Role == store.RoleOwner && !h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageOwners) {
+		return
+	}
 	if err := h.svc.SetMemberActive(r.Context(), m.ID, req.IsActive); err != nil {
 		writeServiceError(w, err)
 		return
@@ -296,6 +331,9 @@ func (h *TeamHandler) removeMember(w http.ResponseWriter, r *http.Request, claim
 		return
 	}
 	if !h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageMembers) {
+		return
+	}
+	if m.Role == store.RoleOwner && !h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageOwners) {
 		return
 	}
 	if err := h.svc.RemoveMember(r.Context(), m.ID); err != nil {
@@ -313,6 +351,13 @@ func (h *TeamHandler) createInvitation(w http.ResponseWriter, r *http.Request, c
 	}
 	teamID := r.PathValue("id")
 	if !h.authorize(w, r, claims.Subject, teamID, TeamActionManageInvitations) {
+		return
+	}
+	// An invitation carries a role, and AcceptInvitation copies it onto
+	// the new member verbatim. Gating only the role route would leave the
+	// same grant available to anyone with a second email address.
+	if store.Role(req.Role) == store.RoleOwner &&
+		!h.authorize(w, r, claims.Subject, teamID, TeamActionManageOwners) {
 		return
 	}
 	// invitedByMemberID must be the caller's own membership in this team,

@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -150,6 +151,40 @@ func RunMemberStore(t *testing.T, newStore func(*testing.T) store.MemberStore, f
 		requireNoError(t, "DeleteMember", s.DeleteMember(ctx(), id(21)))
 		_, err = s.GetMember(ctx(), id(21))
 		requireNotFound(t, "GetMember after delete", err)
+	})
+
+	t.Run("a deleted member is gone from every lookup", func(t *testing.T) {
+		// GetMember is not the only way back to a row. A store that keeps
+		// secondary indexes -- by user, by team -- has to prune them here
+		// too, and the cost of not doing so is not a stale answer: the
+		// index still names an id, the row behind it is gone, and the
+		// reader dereferences the hole. Deleting a member is ordinary
+		// (somebody leaves), so a store that only passes the GetMember
+		// check above breaks on the next page load.
+		s := newStore(t)
+		fx.ensureTeam(t, id(11))
+		fx.ensureUser(t, id(1))
+		fx.ensureUser(t, id(2))
+		requireNoError(t, "CreateMember", s.CreateMember(ctx(),
+			mk(id(21), id(11), ptr(id(1)), store.RoleOwner, "a@example.com")))
+		requireNoError(t, "CreateMember", s.CreateMember(ctx(),
+			mk(id(22), id(11), ptr(id(2)), store.RoleMember, "b@example.com")))
+
+		requireNoError(t, "DeleteMember", s.DeleteMember(ctx(), id(22)))
+
+		if _, err := s.GetMemberByUserAndTeam(ctx(), id(2), id(11)); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("GetMemberByUserAndTeam after delete = %v, want ErrNotFound", err)
+		}
+		members, err := s.ListMembersByTeam(ctx(), id(11))
+		requireNoError(t, "ListMembersByTeam", err)
+		if len(members) != 1 || members[0].ID != id(21) {
+			t.Fatalf("listing after delete = %+v, want only %s", members, id(21))
+		}
+		memberships, err := s.ListMembershipsByUser(ctx(), id(2))
+		requireNoError(t, "ListMembershipsByUser", err)
+		if len(memberships) != 0 {
+			t.Fatalf("the deleted member still has memberships: %+v", memberships)
+		}
 	})
 }
 

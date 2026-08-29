@@ -1021,6 +1021,89 @@ should not pretend to.
 Tier 0 items above is an accurate combination, but the README should name the specific caveats
 (permanent lockout, no password policy, HS256-only) rather than leaving them to be discovered.
 
+### Tier 4 — findings from the security review of this branch
+
+A `/security-review` pass over the 16 commits found three issues, each confirmed by an independent
+adversarial verification before being acted on. All three are fixed; a fourth, non-security crash
+turned up while reproducing one of them.
+
+**S4.1 — The WebAuthn ceremony cookie was unauthenticated, which was an account takeover.** ✅
+`setCeremonyCookie` wrote `base64(json(SessionData))` with no MAC and kept no server-side copy, so
+every field of the ceremony was attacker-chosen. That was not merely untidy: `wan.SessionData`
+carries per-ceremony overrides for the origin allowlist and RP id, and go-webauthn prefers them over
+`Config` at verification time — `GetOrigins` returns `[]string{Origin}` whenever `Origin` is set, and
+`Config.RPOrigins` is only ever enforced at Begin. An attacker with a page on any origin under the
+registrable domain could harvest an assertion at `https://evil.example.com` and replay it to
+`/passkeys/login/finish` with a hand-made cookie naming its own one-entry allowlist, and be issued a
+session for the victim. `HttpOnly`, `Secure` and `SameSite=Strict` were worth nothing — the attacker
+mints the `Cookie` header itself and never involves the victim's browser.
+
+Fixed in two independent places, because one of them protects hosts that never touch `authhandlers`:
+
+- `authhandlers` now HMACs the cookie under a required `WithCeremonyKey`, with the cookie's own name
+  inside the MAC so a registration ceremony cannot be presented as a login one. The key is required
+  and panics at construction: there is no safe default, since a per-process key breaks across
+  replicas and anything derivable here is derivable by an attacker.
+- `passkey.decodeSession` now strips `Origin` and `RelyingPartyID` outright and refuses a session
+  with no `Expires`. The `Session` doc always said it must not be attacker-controlled; a guarantee
+  that survives only correct storage is one this package can enforce for itself, in three lines.
+
+*A test that could not fail, caught and fixed — twice, on the same test.* The first version of the
+forgery test built its forged cookie by hand, without an `expires`. It passed against the unfixed
+code, because `decodeSession` rejects a malformed session with `ErrSession` and `writePasskeyError`
+maps that to the same `ceremony_missing` the test was asserting — a pass that had nothing to do with
+the MAC. The second version derived the forgery by stripping 32 bytes off a genuine `Set-Cookie`,
+which passed too: with the MAC removed there are no 32 bytes to strip, so the leftover was malformed
+and took the same path. Only the third version bites — it mints a real session from
+`BeginDiscoverableLogin` and encodes it raw, which is what an attacker actually writes and is
+independent of the layout of the thing under test. Verified by reverting the MAC.
+
+**S4.2 — The ceremony challenge is not single-use.** ◐ Same root cause, separate fix. Nothing records
+that a challenge was issued or spent, so the same cookie and body succeed repeatedly, and
+`go-webauthn`'s clone check exempts `authDataCount == 0 && SignCount == 0` — which is every synced
+passkey (iCloud Keychain, Google Password Manager), since a credential synced across devices cannot
+keep a coherent counter.
+
+Signing the cookie closes the forgery half completely and bounds the rest: the attacker can no longer
+choose the challenge or suppress the expiry, so a replay now requires capturing *both* the cookie and
+the body, and works only inside the 60-second ceremony window the enforced `Expires` imposes. **The
+residual is real and is not closed**: an attacker holding both, within that window, against a
+counter-0 authenticator, still replays. Closing it needs server-side state — a consumed-challenge
+record — which contradicts this package's stated design of holding no ceremony storage, and is a
+decision the host should make rather than one to smuggle in under a security fix.
+
+**S4.3 — A team admin could become owner and evict the founder.** ✅ `RoleAuthorizer` granted
+`TeamActionManageMembers` to owners and admins alike, and `updateMemberRole` passed `req.Role`
+through verbatim. `team.Service.UpdateMemberRole` guards only *demotion* of an existing owner, so an
+admin could promote itself, thereby supplying the second owner that `requireNotLastOwner` counts, and
+then delete the founder — who has no route back in, since a non-member is refused even
+`TeamActionView`.
+
+`owner` gates nothing else in this codebase, so this is a hostile-takeover and permanent-lockout
+primitive rather than a confidentiality escalation, and it is rated medium on that basis. It is not
+excused by "authz is yours": this is the authorizer the README's quickstart hands people, and §2.5 of
+this document presents it as *"a correct owner/admin/member check you can use"*.
+
+Fixed with a new `TeamActionManageOwners`, granted only to owners, required for granting `RoleOwner`
+or for mutating a member who already holds it. Both routes are covered — gating only the role change
+would have left the same grant available through `createInvitation`, since `AcceptInvitation` copies
+the invitation's role onto the new member verbatim. A `TeamAuthorizer` written before this constant
+falls to its `default` case and denies, which is the safe direction.
+
+Deliberately *not* done: a whitelist of role strings. Arbitrary roles are a documented decision
+(`schema.sql`, `store/team.go`); only `RoleOwner` is special, and only it is special-cased.
+
+**S4.4 — `memstore.DeleteMember` left its secondary indexes holding freed ids.** ✅ Not a
+vulnerability — a crash, found while reproducing S4.3. `DeleteMember` removed the id from `byID`
+only, so `GetMemberByUserAndTeam` and `ListMembersByTeam` dereferenced a nil map value and panicked
+the process on the next read after any member removal. Reachable over HTTP: remove a member, then
+load the team. Both indexes are now pruned, and both readers skip a missing id rather than trusting
+the index.
+
+The conformance suite missed it because "update and delete" only checked `GetMember` afterwards. A
+new case now deletes a member and then goes back in through *every* lookup, so both stores are held
+to it. Verified by reverting the fix: the suite panics with `SIGSEGV`, exactly as the HTTP route did.
+
 ### Explicitly do not do
 
 - **Do not build a plugin system.** Without structural type inference it becomes a registry of

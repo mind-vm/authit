@@ -172,21 +172,27 @@ mux := http.NewServeMux()
 mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(userSvc, signer)))
 mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewTeamHandler(teamSvc, signer,
 	authhandlers.RoleAuthorizer{Teams: teamSvc})))
+mux.Handle("/passkeys/", authhandlers.NewPasskeyHandler(passkeySvc, signer, issuer,
+	authhandlers.WithCeremonyKey(ceremonyKey)))
 ```
 
 They are separate handlers rather than one tree because they don't belong in the same place: the superuser group is an operator surface most deployments should keep off the public internet, and the device group speaks OAuth wire format (form-encoded requests, RFC 6749 error bodies) rather than this package's own JSON conventions.
 
 Protected routes validate the caller's bearer token themselves against the `jwt.Verifier` you pass in — no host middleware or context key required. CORS, rate limiting, and request logging are still yours.
 
-The `oidc` and `passkey` groups keep in-flight ceremony state in a short-lived `HttpOnly` cookie. The `SameSite` setting differs between them and the difference is load-bearing: the OAuth cookie is **Lax**, because the callback is a top-level navigation *from the provider* and a `Strict` cookie would not be sent with it, leaving the callback unable to find the state it must check. The WebAuthn cookies are **Strict**, because that ceremony is driven by XHR from your own page and nothing is lost.
+The `oidc` and `passkey` groups keep in-flight ceremony state in a short-lived `HttpOnly` cookie, **authenticated with a key you supply** via `WithCeremonyKey` — both constructors panic without one. The cookie is not a place to park a value until later; it is what the ceremony verifies against, holding the OAuth state and PKCE verifier the callback is checked against, or the WebAuthn challenge the signature is checked against. Unsigned, a caller with `curl` writes its own and the ceremony then verifies against the attacker's expectations rather than yours, which `HttpOnly` does nothing about — the attacker never needs the browser to hold or send anything. Use at least 32 random bytes, stable across your instances and restarts.
+
+The `SameSite` setting differs between the two groups and the difference is load-bearing: the OAuth cookie is **Lax**, because the callback is a top-level navigation *from the provider* and a `Strict` cookie would not be sent with it, leaving the callback unable to find the state it must check. The WebAuthn cookies are **Strict**, because that ceremony is driven by XHR from your own page and nothing is lost.
 
 Note that importing this module now pulls in `golang.org/x/oauth2` and `go-webauthn/webauthn` — a real cost to your module graph, though not to your binary, since Go links only reachable code.
 
 **Four constructors need a `SessionIssuer`.** `oidc`, `passkey`, `emaillogin` and `device` all resolve *who* someone is without minting a credential — deliberately, since what a signed-in user should receive is your decision. The issuer writes the response itself, because these flows disagree about what a response is: a passkey assertion is an XHR wanting JSON, an OAuth callback is a top-level navigation wanting a redirect and a `Set-Cookie`.
 
-**Two constructors demand an argument authit cannot supply, and panic without it.**
+**Some constructors demand an argument authit cannot supply, and panic without it.**
 
-`NewTeamHandler` requires a `TeamAuthorizer`. The `team` package deliberately doesn't check the caller's own role, so a route group that only asked "is this request authenticated" would let any user change any member's role in any team. `RoleAuthorizer` implements the conventional rules (active member may view; active owner or admin may manage), and you can replace it — if your model has a principal that spans teams, `team.Role` has no home for it by design, so write an authorizer that consults your schema first.
+`NewTeamHandler` requires a `TeamAuthorizer`. The `team` package deliberately doesn't check the caller's own role, so a route group that only asked "is this request authenticated" would let any user change any member's role in any team. `RoleAuthorizer` implements the conventional rules (active member may view; active owner or admin may manage members and invitations; **only an owner may grant the owner role or act on a member who holds it**), and you can replace it — if your model has a principal that spans teams, `team.Role` has no home for it by design, so write an authorizer that consults your schema first.
+
+That last rule is separated out as its own `TeamActionManageOwners` because `owner` is the one role authit itself gives meaning to: the last-owner guards in `team` are the only invariant the library enforces about who controls a team. An admin who could grant it would grant it to themselves, and the founder would stop being the last owner and could then be removed. If you write your own authorizer, note that an unrecognised action must deny — a `default` case that returns an error is what keeps a new action from silently opening a route.
 
 `NewDeviceHandler` requires a `DeviceTokenIssuer` and a verification URI. `device.PollDeviceToken` resolves *who* approved a request without minting anything, because what credential a CLI should receive is your decision; and only you know your own verification page's URL. Neither gap has a default that is safe everywhere, so neither gets one.
 

@@ -69,10 +69,14 @@ func NewPasskeyHandler(svc *passkey.Service, verifier authitjwt.Verifier, issuer
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if len(o.ceremonyKey) == 0 {
+		panic("authit/authhandlers: NewPasskeyHandler requires WithCeremonyKey; " +
+			"the ceremony cookie carries the challenge the assertion is verified against")
+	}
 	h := &PasskeyHandler{
 		// Scoped to "/" because registration lives under /me and login
 		// does not; a narrower path would not cover both.
-		ceremonyBase: ceremonyBase{issuer: issuer, cookiePath: "/", insecure: o.insecure},
+		ceremonyBase: ceremonyBase{issuer: issuer, cookiePath: "/", insecure: o.insecure, key: o.ceremonyKey},
 		svc:          svc, verifier: verifier,
 	}
 
@@ -110,7 +114,7 @@ func (h *PasskeyHandler) beginRegistration(w http.ResponseWriter, r *http.Reques
 
 func (h *PasskeyHandler) finishRegistration(w http.ResponseWriter, r *http.Request, claims authitjwt.Claims) {
 	defer h.clearCeremonyCookie(w, passkeyRegisterCookie, http.SameSiteStrictMode)
-	sess, ok := readCeremonyCookie(r, passkeyRegisterCookie)
+	sess, ok := h.readCeremonyCookie(r, passkeyRegisterCookie)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "ceremony_missing", passkey.ErrSession.Error())
 		return
@@ -138,7 +142,7 @@ func (h *PasskeyHandler) beginLogin(w http.ResponseWriter, r *http.Request) {
 
 func (h *PasskeyHandler) finishLogin(w http.ResponseWriter, r *http.Request) {
 	defer h.clearCeremonyCookie(w, passkeyLoginCookie, http.SameSiteStrictMode)
-	sess, ok := readCeremonyCookie(r, passkeyLoginCookie)
+	sess, ok := h.readCeremonyCookie(r, passkeyLoginCookie)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "ceremony_missing", passkey.ErrSession.Error())
 		return

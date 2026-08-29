@@ -96,8 +96,9 @@ type UserHandler struct {
 type Option func(*options)
 
 type options struct {
-	ip       func(*http.Request) string
-	insecure bool
+	ip          func(*http.Request) string
+	insecure    bool
+	ceremonyKey []byte
 }
 
 // WithInsecureCookies drops the Secure attribute from the short-lived
@@ -108,6 +109,29 @@ type options struct {
 // legitimate use.
 func WithInsecureCookies() Option {
 	return func(o *options) { o.insecure = true }
+}
+
+// WithCeremonyKey sets the key authenticating the short-lived ceremony
+// cookies the oidc and passkey groups use. It is required by
+// NewOIDCHandler and NewPasskeyHandler, which panic without it.
+//
+// It is required rather than defaulted because there is no default that is
+// both safe and correct. Generating one per process would break the moment
+// a host runs two replicas or restarts mid-ceremony, and any key this
+// package could derive on its own would be one an attacker can derive too.
+// Only the host knows a secret that is stable across its instances.
+//
+// Use at least 32 random bytes, keep it out of the source tree, and treat
+// it as a secret: whoever holds it can mint a ceremony cookie, which is
+// what these routes verify their side of the ceremony against. Rotating it
+// invalidates every in-flight ceremony -- a failed sign-in attempt the user
+// retries, not a lockout.
+//
+// It may be the same secret used elsewhere only if that secret is not also
+// handed to something that signs attacker-supplied bytes with it. A
+// dedicated key costs nothing.
+func WithCeremonyKey(key []byte) Option {
+	return func(o *options) { o.ceremonyKey = key }
 }
 
 // WithIPExtractor overrides how the client IP recorded on login/refresh is
