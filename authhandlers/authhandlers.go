@@ -46,7 +46,7 @@
 // 6749 error bodies) rather than this package's own JSON conventions.
 //
 //	mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(users, verifier)))
-//	mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewTeamHandler(teams, verifier,
+//	mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewTeamHandler(teams, auth,
 //		authhandlers.RoleAuthorizer{Teams: teams})))
 //	mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewPATHandler(pats, verifier)))
 //	adminMux.Handle("/", authhandlers.NewSuperuserHandler(supers))
@@ -77,6 +77,9 @@
 package authhandlers
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 
@@ -87,9 +90,9 @@ import (
 
 // UserHandler serves authit's user-plane routes.
 type UserHandler struct {
-	svc      *user.Service
-	verifier authitjwt.Verifier
-	ip       func(*http.Request) string
+	svc  *user.Service
+	auth authithttp.Authenticator
+	ip   func(*http.Request) string
 }
 
 // Option configures any handler constructor in this package.
@@ -189,18 +192,25 @@ func defaultIPExtractor(r *http.Request) string {
 //	POST   /me/two-factor/disable
 //	POST   /me/two-factor/backup-codes/regenerate
 //	GET    /me/two-factor
-func NewUserHandler(svc *user.Service, verifier authitjwt.Verifier, opts ...Option) http.Handler {
+func NewUserHandler(svc *user.Service, auth authithttp.Authenticator, opts ...Option) http.Handler {
 	o := options{ip: defaultIPExtractor}
 	for _, opt := range opts {
 		opt(&o)
 	}
-	h := &UserHandler{svc: svc, verifier: verifier, ip: o.ip}
+	h := &UserHandler{svc: svc, auth: auth, ip: o.ip}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /register", h.register)
 	mux.HandleFunc("POST /login", h.login)
 	mux.HandleFunc("POST /login/two-factor", h.verifyTwoFactorLogin)
-	mux.HandleFunc("POST /refresh", h.refresh)
+	if svc.SessionMode() == user.SessionModeJWT {
+		// Absent rather than answering an error, in opaque session mode.
+		// There is no refresh token to present: the session token is the
+		// credential and using it is what extends it. A route that exists
+		// only to explain that it does nothing is worse than a 404, which
+		// says the same thing in the vocabulary a client already has.
+		mux.HandleFunc("POST /refresh", h.refresh)
+	}
 	mux.HandleFunc("POST /logout", h.logout)
 	mux.HandleFunc("POST /password/reset-request", h.requestPasswordReset)
 	mux.HandleFunc("POST /password/reset", h.resetPassword)
@@ -226,7 +236,7 @@ func NewUserHandler(svc *user.Service, verifier authitjwt.Verifier, opts ...Opti
 type authedHandlerFunc func(w http.ResponseWriter, r *http.Request, claims authitjwt.Claims)
 
 func (h *UserHandler) withAuth(next authedHandlerFunc) http.HandlerFunc {
-	return requireUser(h.verifier, next)
+	return requireUser(h.auth, next)
 }
 
 // requireUser wraps a handler so it only runs for a request carrying a
@@ -236,13 +246,43 @@ func (h *UserHandler) withAuth(next authedHandlerFunc) http.HandlerFunc {
 // The superuser group deliberately does NOT use it: those tokens carry a
 // different audience, and checking them with a plain user-plane verifier
 // would accept a user token on an operator route. See requireSuperuser.
-func requireUser(v authitjwt.Verifier, next authedHandlerFunc) http.HandlerFunc {
+func requireUser(a authithttp.Authenticator, next authedHandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims, err := authithttp.Validate(v, r)
+		claims, err := a.Authenticate(r.Context(), r)
 		if err != nil {
 			writeError(w, authithttp.StatusFor(err), "unauthorized", err.Error())
 			return
 		}
 		next(w, r, claims)
 	}
+}
+
+// UserSessionAuth wires a user.Service in SessionModeOpaque to the route
+// groups, translating its refusals into the ones StatusFor understands.
+//
+// The translation is the whole function, and it is not cosmetic. The user
+// package returns user.ErrInvalidToken for a session that is revoked,
+// expired or unknown; authithttp.StatusFor knows only its own sentinels and
+// answers 500 to anything else. Without this, revoking a session produces a
+// 500 on the next request -- an outage-shaped answer to a perfectly ordinary
+// "you are signed out", which is precisely the confusion Authenticator's
+// error contract exists to prevent.
+//
+// A store failure keeps its own error and so keeps its 500, which is the
+// half of the distinction worth protecting.
+func UserSessionAuth(svc *user.Service) authithttp.Authenticator {
+	return authithttp.SessionAuth(sessionValidator{svc})
+}
+
+type sessionValidator struct{ svc *user.Service }
+
+func (v sessionValidator) ValidateSession(ctx context.Context, token string) (authitjwt.Claims, error) {
+	claims, err := v.svc.ValidateSession(ctx, token)
+	if err != nil {
+		if errors.Is(err, user.ErrInvalidToken) {
+			return authitjwt.Claims{}, fmt.Errorf("%w: %w", authithttp.ErrInvalidToken, err)
+		}
+		return authitjwt.Claims{}, err
+	}
+	return claims, nil
 }

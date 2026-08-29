@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mind-vm/authit/authithttp"
 	"math"
 	"net/http"
 	"time"
@@ -36,7 +37,7 @@ type DeviceTokenIssuer func(ctx context.Context, userID, scope string) (any, err
 // DeviceHandler serves the RFC 8628 device authorization grant.
 type DeviceHandler struct {
 	svc             *device.Service
-	verifier        authitjwt.Verifier
+	auth            authithttp.Authenticator
 	issuer          DeviceTokenIssuer
 	verificationURI string
 }
@@ -61,7 +62,7 @@ type DeviceHandler struct {
 // host, which is the only party that knows its own domain and routing.
 // issuer and verificationURI are both required; NewDeviceHandler panics
 // without them, at startup rather than at first use.
-func NewDeviceHandler(svc *device.Service, verifier authitjwt.Verifier, issuer DeviceTokenIssuer, verificationURI string) http.Handler {
+func NewDeviceHandler(svc *device.Service, auth authithttp.Authenticator, issuer DeviceTokenIssuer, verificationURI string) http.Handler {
 	if issuer == nil {
 		panic("authit/authhandlers: NewDeviceHandler requires a DeviceTokenIssuer; " +
 			"authit resolves who approved the request but does not mint the credential")
@@ -70,13 +71,13 @@ func NewDeviceHandler(svc *device.Service, verifier authitjwt.Verifier, issuer D
 		panic("authit/authhandlers: NewDeviceHandler requires a verificationURI; " +
 			"RFC 8628 §3.2 makes verification_uri a required response field")
 	}
-	h := &DeviceHandler{svc: svc, verifier: verifier, issuer: issuer, verificationURI: verificationURI}
+	h := &DeviceHandler{svc: svc, auth: auth, issuer: issuer, verificationURI: verificationURI}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /device/code", h.deviceCode)
 	mux.HandleFunc("POST /device/token", h.deviceToken)
-	mux.HandleFunc("POST /device/approve", requireUser(verifier, h.approve))
-	mux.HandleFunc("POST /device/deny", requireUser(verifier, h.deny))
+	mux.HandleFunc("POST /device/approve", requireUser(auth, h.approve))
+	mux.HandleFunc("POST /device/deny", requireUser(auth, h.deny))
 	return mux
 }
 

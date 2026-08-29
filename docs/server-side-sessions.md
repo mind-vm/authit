@@ -1,6 +1,19 @@
 # Spec — T2.4, optional server-side sessions
 
-Status: **proposed**, not implemented. Three decisions below need settling before code.
+Status: **implemented**, all three decisions taken as recommended — reuse the refresh row (D1), one
+credential with no refresh (D2), an `Authenticator` seam (D3).
+
+Two corrections to what is written below. It says *seven* constructors take a `jwt.Verifier`; it is
+**six** — `NewSuperuserHandler` and `NewEmailLoginHandler` never took one. And §5's first open
+question, whether opaque mode earns its cost, was answered by building it: the seam turned out to be
+worth having on its own, independently of the mode it was introduced for.
+
+One thing the spec did not anticipate. `user.ValidateSession` returns `user.ErrInvalidToken`, which
+`authithttp.StatusFor` does not recognise, so the first working version answered **500 to a revoked
+session** — the exact failure the `Authenticator` error contract was written to prevent, committed
+by the author of that contract. `authhandlers.UserSessionAuth` does the translation, since
+`authhandlers` is the only package that sees both sides. An end-to-end HTTP test caught it; no unit
+test in either package would have.
 
 ---
 

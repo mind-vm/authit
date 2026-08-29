@@ -3,6 +3,7 @@ package authhandlers
 import (
 	"context"
 	"errors"
+	"github.com/mind-vm/authit/authithttp"
 	"net/http"
 	"time"
 
@@ -105,9 +106,9 @@ func (a RoleAuthorizer) Authorize(ctx context.Context, callerUserID, teamID stri
 
 // TeamHandler serves authit's team plane.
 type TeamHandler struct {
-	svc      *team.Service
-	verifier authitjwt.Verifier
-	authz    TeamAuthorizer
+	svc   *team.Service
+	auth  authithttp.Authenticator
+	authz TeamAuthorizer
 }
 
 // NewTeamHandler builds the team-plane route group. Every route is
@@ -132,12 +133,12 @@ type TeamHandler struct {
 //	DELETE /teams/{id}/invitations/{invitationID}
 //	POST   /invitations/lookup
 //	POST   /invitations/accept
-func NewTeamHandler(svc *team.Service, verifier authitjwt.Verifier, authz TeamAuthorizer) http.Handler {
+func NewTeamHandler(svc *team.Service, auth authithttp.Authenticator, authz TeamAuthorizer) http.Handler {
 	if authz == nil {
 		panic("authit/authhandlers: NewTeamHandler requires a TeamAuthorizer; " +
 			"pass RoleAuthorizer{Teams: svc} for the conventional owner/admin rules")
 	}
-	h := &TeamHandler{svc: svc, verifier: verifier, authz: authz}
+	h := &TeamHandler{svc: svc, auth: auth, authz: authz}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /teams", h.withAuth(h.createTeam))
@@ -160,7 +161,7 @@ func NewTeamHandler(svc *team.Service, verifier authitjwt.Verifier, authz TeamAu
 }
 
 func (h *TeamHandler) withAuth(next authedHandlerFunc) http.HandlerFunc {
-	return requireUser(h.verifier, next)
+	return requireUser(h.auth, next)
 }
 
 // authorize consults the TeamAuthorizer and writes the response itself on

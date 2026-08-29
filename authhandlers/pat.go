@@ -1,6 +1,7 @@
 package authhandlers
 
 import (
+	"github.com/mind-vm/authit/authithttp"
 	"net/http"
 	"time"
 
@@ -12,8 +13,8 @@ import (
 // PATHandler serves personal-access-token management for the authenticated
 // caller.
 type PATHandler struct {
-	svc      *pat.Service
-	verifier authitjwt.Verifier
+	svc  *pat.Service
+	auth authithttp.Authenticator
 }
 
 // NewPATHandler builds the personal-access-token route group. Every route
@@ -29,8 +30,8 @@ type PATHandler struct {
 // on an incoming request to identify the caller, not something a client
 // submits a token to; exposing it would be an oracle for testing whether a
 // guessed token is live.
-func NewPATHandler(svc *pat.Service, verifier authitjwt.Verifier) http.Handler {
-	h := &PATHandler{svc: svc, verifier: verifier}
+func NewPATHandler(svc *pat.Service, auth authithttp.Authenticator) http.Handler {
+	h := &PATHandler{svc: svc, auth: auth}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /me/tokens", h.withAuth(h.createToken))
@@ -40,7 +41,7 @@ func NewPATHandler(svc *pat.Service, verifier authitjwt.Verifier) http.Handler {
 }
 
 func (h *PATHandler) withAuth(next authedHandlerFunc) http.HandlerFunc {
-	return requireUser(h.verifier, next)
+	return requireUser(h.auth, next)
 }
 
 func (h *PATHandler) createToken(w http.ResponseWriter, r *http.Request, claims authitjwt.Claims) {

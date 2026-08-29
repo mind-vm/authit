@@ -8,6 +8,48 @@ import (
 	"github.com/mind-vm/authit/ratelimit"
 )
 
+// SessionMode decides what an authenticated caller carries and how a
+// protected route checks it.
+//
+// The zero value is SessionModeJWT, so a Config that says nothing keeps the
+// behaviour authit has always had.
+type SessionMode int
+
+const (
+	// SessionModeJWT issues a short-lived signed access token plus a
+	// long-lived opaque refresh token. Checking the access token is a
+	// signature check: no database, no context, no way for it to fail
+	// because a store is unreachable. That is what makes it the right
+	// default for APIs, CLIs and multi-service fan-out, where a lookup per
+	// service per request is the cost nobody wants to pay.
+	//
+	// The price is stated plainly because it is real: revoking a session
+	// stops it being refreshable at once, but the access token it already
+	// minted stays valid until it expires. AccessTokenTTL is that window.
+	SessionModeJWT SessionMode = iota
+
+	// SessionModeOpaque issues one random token, validated by looking it up
+	// on every request. Revocation takes effect immediately, which is the
+	// entire reason to choose it.
+	//
+	// It is a different shape, not a different encoding, and the
+	// differences bite:
+	//
+	//   - There is no refresh token. The pair exists so that the common
+	//     path avoids a lookup; once every request performs one, a second
+	//     credential for avoiding lookups is ceremony. TokenPair.RefreshToken
+	//     is empty and Refresh returns ErrNotOpaqueSession.
+	//   - Every protected request costs a round trip to the refresh-token
+	//     store, which is the session store in this mode.
+	//   - Authentication can now fail because a database is down, which is
+	//     a 500 and not a 401. Use authithttp.SessionAuth, which classifies
+	//     it, rather than treating every failure as unauthenticated.
+	//
+	// Sessions still expire after RefreshTokenTTL, extended on use once
+	// SessionSlidingWindow has elapsed.
+	SessionModeOpaque
+)
+
 // EmailVerificationPolicy decides whether Authenticate refuses a login from
 // an account whose email address has not been verified yet.
 //
@@ -34,7 +76,19 @@ const (
 // Config tunes the user package's flows. Zero-value fields are replaced
 // with sane defaults by NewService.
 type Config struct {
+	// SessionMode selects the session model. Defaults to SessionModeJWT.
+	SessionMode SessionMode
+	// SessionSlidingWindow is how much of a session's life must elapse
+	// before using it extends it, in SessionModeOpaque. Defaults to a
+	// quarter of RefreshTokenTTL; a negative value disables extension, so
+	// sessions expire a fixed time after being issued.
+	//
+	// A threshold rather than extending on every request, because the
+	// latter is a write per request. Nothing here is consulted in
+	// SessionModeJWT.
+	SessionSlidingWindow time.Duration
 	// AccessTokenTTL is how long an issued access JWT is valid for.
+	// Ignored in SessionModeOpaque, which issues no JWT.
 	AccessTokenTTL time.Duration
 	// RefreshTokenTTL is how long a refresh token (session) stays valid if
 	// never revoked.
@@ -128,6 +182,13 @@ func (c Config) withDefaults() Config {
 	}
 	if c.RefreshTokenTTL <= 0 {
 		c.RefreshTokenTTL = 7 * 24 * time.Hour
+	}
+	if c.SessionSlidingWindow == 0 {
+		// A quarter of the lifetime: a session in daily use never
+		// expires under someone, and an idle one still ages out. Zero
+		// means unset here, which is why disabling extension is spelled
+		// as a negative rather than as zero.
+		c.SessionSlidingWindow = c.RefreshTokenTTL / 4
 	}
 	if c.PasswordResetTTL <= 0 {
 		c.PasswordResetTTL = time.Hour

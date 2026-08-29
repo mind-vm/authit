@@ -34,4 +34,9 @@ var (
 	ErrTwoFactorNotEnabled = errors.New("authit/user: two-factor not enabled")
 	ErrInvalidTwoFactor    = errors.New("authit/user: invalid two-factor code")
 	ErrSessionNotFound     = errors.New("authit/user: session not found")
+	// ErrNotOpaqueSession is returned by Refresh when Config.SessionMode is
+	// SessionModeOpaque. There is no refresh token in that mode -- the
+	// session token is the credential, and it is extended by using it
+	// rather than exchanged for a new one.
+	ErrNotOpaqueSession = errors.New("authit/user: refresh is not used in opaque session mode")
 )

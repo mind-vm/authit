@@ -179,6 +179,42 @@ func RunRefreshTokenStore(t *testing.T, newStore func(*testing.T) store.RefreshT
 		// revoke an already-revoked token.
 		requireNoError(t, "RevokeRefreshToken twice", s.RevokeRefreshToken(ctx(), rt.ID))
 	})
+
+	t.Run("touching extends a live token", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		rt := mk(id(31), id(1), "h1", time.Now().Add(time.Hour))
+		requireNoError(t, "CreateRefreshToken", s.CreateRefreshToken(ctx(), rt))
+
+		want := time.Now().Add(48 * time.Hour)
+		requireNoError(t, "TouchRefreshToken", s.TouchRefreshToken(ctx(), rt.ID, want))
+		got, err := s.GetRefreshTokenByHash(ctx(), "h1")
+		requireNoError(t, "GetRefreshTokenByHash", err)
+		if !got.ExpiresAt.After(time.Now().Add(24 * time.Hour)) {
+			t.Fatalf("ExpiresAt = %v, want it moved out to roughly %v", got.ExpiresAt, want)
+		}
+	})
+
+	t.Run("touching a revoked token is refused", func(t *testing.T) {
+		// The sliding expiry of user.SessionModeOpaque reads a session and
+		// then extends it. Without this check a session revoked between
+		// those two steps comes back with a fresh lifetime -- revocation
+		// undone by the request it was racing.
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		rt := mk(id(31), id(1), "h1", time.Now().Add(time.Hour))
+		requireNoError(t, "CreateRefreshToken", s.CreateRefreshToken(ctx(), rt))
+		requireNoError(t, "RevokeRefreshToken", s.RevokeRefreshToken(ctx(), rt.ID))
+
+		err := s.TouchRefreshToken(ctx(), rt.ID, time.Now().Add(48*time.Hour))
+		requireNotFound(t, "TouchRefreshToken on a revoked token", err)
+	})
+
+	t.Run("touching a missing token is refused", func(t *testing.T) {
+		s := newStore(t)
+		err := s.TouchRefreshToken(ctx(), id(99), time.Now().Add(time.Hour))
+		requireNotFound(t, "TouchRefreshToken", err)
+	})
 }
 
 // RunPasswordResetStore checks store.PasswordResetStore.

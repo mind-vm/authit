@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/mind-vm/authit/authithttp"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -186,7 +187,7 @@ func newOIDCServer(t *testing.T) (http.Handler, *oidc.Service) {
 		t.Fatalf("oidc.NewService: %v", err)
 	}
 	iss := &echoIssuer{}
-	h := authhandlers.NewOIDCHandler(svc, testSigner(t), iss.issue(),
+	h := authhandlers.NewOIDCHandler(svc, authithttp.VerifierAuth(testSigner(t)), iss.issue(),
 		func(*http.Request, string) string { return "https://app.example/callback" },
 		authhandlers.WithCeremonyKey(testCeremonyKey))
 	return h, svc
@@ -272,12 +273,12 @@ func TestOIDCRequiresAnIssuerAndRedirectURI(t *testing.T) {
 	iss := &echoIssuer{}
 	for name, run := range map[string]func(){
 		"no issuer": func() {
-			authhandlers.NewOIDCHandler(svc, testSigner(t), nil,
+			authhandlers.NewOIDCHandler(svc, authithttp.VerifierAuth(testSigner(t)), nil,
 				func(*http.Request, string) string { return "x" },
 				authhandlers.WithCeremonyKey(testCeremonyKey))
 		},
 		"no redirect uri": func() {
-			authhandlers.NewOIDCHandler(svc, testSigner(t), iss.issue(), nil,
+			authhandlers.NewOIDCHandler(svc, authithttp.VerifierAuth(testSigner(t)), iss.issue(), nil,
 				authhandlers.WithCeremonyKey(testCeremonyKey))
 		},
 	} {
@@ -319,7 +320,7 @@ func newPasskeyServerWithService(t *testing.T) (http.Handler, *passkey.Service) 
 		t.Fatalf("passkey.NewService: %v", err)
 	}
 	iss := &echoIssuer{}
-	return authhandlers.NewPasskeyHandler(svc, testSigner(t), iss.issue(),
+	return authhandlers.NewPasskeyHandler(svc, authithttp.VerifierAuth(testSigner(t)), iss.issue(),
 		authhandlers.WithCeremonyKey(testCeremonyKey)), svc
 }
 
@@ -390,7 +391,7 @@ func TestPasskeyRequiresAnIssuer(t *testing.T) {
 			t.Fatal("a nil SessionIssuer must be refused at construction")
 		}
 	}()
-	authhandlers.NewPasskeyHandler(svc, testSigner(t), nil,
+	authhandlers.NewPasskeyHandler(svc, authithttp.VerifierAuth(testSigner(t)), nil,
 		authhandlers.WithCeremonyKey(testCeremonyKey))
 }
 
@@ -491,7 +492,7 @@ func TestCeremonyKeyIsRequired(t *testing.T) {
 			t.Fatal("a missing ceremony key must be refused at construction")
 		}
 	}()
-	authhandlers.NewPasskeyHandler(svc, testSigner(t), iss.issue())
+	authhandlers.NewPasskeyHandler(svc, authithttp.VerifierAuth(testSigner(t)), iss.issue())
 }
 
 // TestReplayedCeremonyIsRefusedOverHTTP is the end of the story the

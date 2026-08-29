@@ -1,6 +1,7 @@
 package authhandlers
 
 import (
+	"github.com/mind-vm/authit/authithttp"
 	"net/http"
 
 	authitjwt "github.com/mind-vm/authit/jwt"
@@ -15,7 +16,7 @@ const oidcStateCookie = "authit_oidc"
 type OIDCHandler struct {
 	ceremonyBase
 	svc         *oidc.Service
-	verifier    authitjwt.Verifier
+	auth        authithttp.Authenticator
 	redirectURI func(r *http.Request, provider string) string
 }
 
@@ -47,7 +48,7 @@ type OIDCHandler struct {
 // matches an existing account that it may not join; see oidc.LinkingPolicy.
 // That is the safe outcome, not an error: send the user to sign in by the
 // means they already have.
-func NewOIDCHandler(svc *oidc.Service, verifier authitjwt.Verifier, issuer SessionIssuer, redirectURI func(r *http.Request, provider string) string, opts ...Option) http.Handler {
+func NewOIDCHandler(svc *oidc.Service, auth authithttp.Authenticator, issuer SessionIssuer, redirectURI func(r *http.Request, provider string) string, opts ...Option) http.Handler {
 	if issuer == nil {
 		panic("authit/authhandlers: NewOIDCHandler requires a SessionIssuer")
 	}
@@ -65,14 +66,14 @@ func NewOIDCHandler(svc *oidc.Service, verifier authitjwt.Verifier, issuer Sessi
 	}
 	h := &OIDCHandler{
 		ceremonyBase: ceremonyBase{issuer: issuer, cookiePath: "/", insecure: o.insecure, key: o.ceremonyKey},
-		svc:          svc, verifier: verifier, redirectURI: redirectURI,
+		svc:          svc, auth: auth, redirectURI: redirectURI,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /oidc/{provider}/start", h.start)
 	mux.HandleFunc("GET /oidc/{provider}/callback", h.callback)
-	mux.HandleFunc("GET /me/accounts", requireUser(verifier, h.listAccounts))
-	mux.HandleFunc("DELETE /me/accounts/{provider}", requireUser(verifier, h.unlink))
+	mux.HandleFunc("GET /me/accounts", requireUser(auth, h.listAccounts))
+	mux.HandleFunc("DELETE /me/accounts/{provider}", requireUser(auth, h.unlink))
 	return mux
 }
 

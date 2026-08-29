@@ -89,8 +89,10 @@ CLIs, and multi-service fan-out, where a per-request database round trip per ser
 better-auth's is the right one for a classic web app where "sign out everywhere, now" is a product
 requirement.
 
-What authit is missing is not the model — it is the **option**. There is no way to get
-revoke-immediately semantics without abandoning the library's token issuance entirely.
+What authit was missing is not the model — it is the **option**, and T2.4 supplies it.
+`user.Config.SessionMode` selects: `SessionModeJWT` is unchanged and remains the default,
+`SessionModeOpaque` issues one token validated by lookup, so revocation takes effect on the next
+request rather than when an access token happens to expire.
 
 Related gaps in the same area:
 
@@ -902,20 +904,53 @@ worse than no test, and this one did not until it was made to.
 `crypto/usercode.go`, `storetest/user.go`, `audit/audit.go`, `schema.sql`.
 *Tests:* `emaillogin/emaillogin_test.go`, `crypto/numericcode_test.go`.
 
-**T2.4 — Optional server-side sessions.** ◐ *Specified, not built* —
-[server-side-sessions.md](server-side-sessions.md), which corrects this entry in one load-bearing
-way: authit already has server-side sessions. `store.RefreshToken` is a session row and
-`ListSessions`/`RevokeSession` already read it as one. The gap is that the *access* credential
-consults nothing, so a revoked session stops being refreshable at once and stays usable until the
-JWT expires. That makes the item smaller than written (no new store port) and larger (every route
-group's constructor takes a `jwt.Verifier`, which cannot validate by lookup). Three decisions are
-open there. Original text follows.
+**T2.4 — Optional server-side sessions.** ✅ *Done*, and smaller than this entry proposed in one
+way and much larger in another. Designed in
+[server-side-sessions.md](server-side-sessions.md).
 
-`store.SessionStore` plus
-`user.Config.SessionMode` (`SessionModeJWT` default, `SessionModeOpaque`). Opaque mode issues a
-random session token instead of a JWT and validates by lookup, buying immediate revocation for hosts
-that want it. This is the one place worth adopting better-auth's model outright — as an option, not a
-replacement.
+*No `store.SessionStore`.* authit already had server-side sessions: a `store.RefreshToken` row is
+one, and `ListSessions`/`RevokeSession` already read those rows and already called them sessions. A
+new port would have been that row field for field, with `ListSessions` branching on mode to pick
+between two identical tables. The gap was never storage — it was that the *access* credential
+consulted none of it.
+
+*One credential, not two.* `SessionModeOpaque` issues a single token; `TokenPair.RefreshToken` is
+empty, the JSON field is omitted rather than sent blank, `Refresh` returns `ErrNotOpaqueSession` and
+`POST /refresh` is not registered at all. The pair exists so the common path avoids a lookup; once
+every request performs one, a second credential for avoiding lookups is ceremony. This makes opaque
+mode a different API shape rather than a different token encoding, which is why it is a documented
+mode and not a default.
+
+*The expensive part: an `Authenticator` seam.* `authithttp.Validate` is a pure function — no
+context, no I/O — and six route-group constructors took a `jwt.Verifier`. An opaque token cannot be
+checked that way, so `authithttp.Authenticator` now sits where the verifier did, with two real
+adapters behind it: `VerifierAuth` (today's behaviour, no I/O) and `SessionAuth` (a lookup). Six
+signatures changed, free only because none of this is released. The seam is independently useful: it
+is what a host needs to plug in a gateway header, an mTLS identity, or a session its own framework
+issued.
+
+*Sliding expiry, with a threshold.* `Config.SessionSlidingWindow` (a quarter of `RefreshTokenTTL` by
+default, negative to disable) means using a session extends it only once enough of its life has
+passed. Extending on every request is a write on every request, which is the cost that makes people
+abandon server-side sessions. `store.RefreshTokenStore.TouchRefreshToken` does it, refusing revoked
+rows — without that predicate a session revoked between a request's lookup and its extension comes
+back with a fresh lifetime, revocation undone by the request it raced.
+
+*A bug the end-to-end test caught that no unit test would have.* `ValidateSession` returns
+`user.ErrInvalidToken`; `authithttp.StatusFor` knows only its own sentinels and answers 500 to
+anything else. So revoking a session produced **500 on the next request** — an outage-shaped answer
+to an ordinary "you are signed out", and exactly the confusion the `Authenticator` doc had just
+finished warning about. `authhandlers.UserSessionAuth` translates, because `authhandlers` is the one
+package that can see both. Nothing below the HTTP layer learned about HTTP.
+
+*Not in scope, deliberately:* `superuser` stays JWT-only, `pat` already validates by lookup and
+needed nothing, and there is no `freshAge` / re-authentication-for-sensitive-routes.
+
+*Changed:* `authithttp/authenticator.go` (new), `user/config.go`, `user/sessions.go`,
+`user/register_login.go`, `user/errors.go`, `store/user.go`, `memstore/refresh_tokens.go`,
+`sqlbstore/refreshtoken.go`, `storetest/user.go`, `authhandlers/` (six constructors, `dto.go`),
+`schema.sql`. *Tests:* `user/opaque_session_test.go` (new),
+`authhandlers/planes_test.go`.
 
 **T2.5 — An optional `authz` package.** Statements, roles, `Can(member store.Member, action, resource string) bool`,
 with owner/admin/member predefined. Optional, in its own module, imported by nobody who does not want

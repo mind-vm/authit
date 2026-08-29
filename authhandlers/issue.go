@@ -53,7 +53,7 @@ type ceremonyBase struct {
 
 // ceremonyTTL bounds how long a half-finished ceremony stays resumable.
 //
-// It is short on purpose: the cookie holds the state and PKCE verifier, or
+// It is short on purpose: the cookie holds the state and PKCE auth, or
 // a WebAuthn challenge, and none of those have any reason to outlive the
 // user's attention span.
 const ceremonyTTL = 10 * time.Minute

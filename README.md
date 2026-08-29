@@ -125,7 +125,34 @@ if err != nil {
 // claims.Subject is the user ID.
 ```
 
-That's the whole package: `BearerToken`, `Validate`, `StatusFor`. No `http.Handler`, no context key, no opinion about your error envelope. Note that `Validate` accepts an impersonation token (`claims.IsImpersonation()`, minted via `superuser.Impersonate`) — it's genuine, so whether acting-as is allowed on a given route is yours to check. If you want revocation to take effect before token expiry, re-resolve the principal from your own storage and treat claims beyond the subject as hints.
+### Sessions: signature check, or lookup
+
+`user.Config.SessionMode` picks the model, and the default is unchanged.
+
+**`SessionModeJWT` (default)** issues a short access JWT plus a long opaque refresh token. Checking the access token is a signature check — no database, no context, no way for it to fail because a store is unreachable. That is the right trade for APIs, CLIs and multi-service fan-out, where a lookup per service per request is the cost nobody wants. The price, stated plainly: revoking a session stops it being refreshable at once, but the access token it already minted stays valid until it expires.
+
+**`SessionModeOpaque`** issues one random token, validated by looking it up on every request, so revocation takes effect immediately. It is a different shape, not a different encoding:
+
+- **There is no refresh token.** The pair exists so the common path avoids a lookup; once every request performs one, a second credential for avoiding lookups is ceremony. `Refresh` returns `ErrNotOpaqueSession` and `POST /refresh` is not registered.
+- **Every protected request costs a lookup.** That is the trade, and it is why this is not the default.
+- **Authentication can now fail because a database is down** — a 500, not a 401. Wire it with `authhandlers.UserSessionAuth(svc)`, which keeps that distinction; collapsing it reports an outage as a wall of failed logins.
+
+Sessions expire after `RefreshTokenTTL`, extended on use once `SessionSlidingWindow` has passed (a quarter of the lifetime by default; negative disables extension). A threshold, not every request, because the latter is a write per request.
+
+Both modes use the same rows, so `ListSessions`, `RevokeSession` and `RevokeOtherSessions` work identically in each.
+
+### Who is this request? (`authithttp.Authenticator`)
+
+Everything that guards a route takes an `Authenticator`, not a `jwt.Verifier`, because "is this authenticated" stopped being a pure function once a session could be validated by lookup:
+
+```go
+authhandlers.NewUserHandler(userSvc, authithttp.VerifierAuth(signer))   // JWT mode
+authhandlers.NewUserHandler(userSvc, authhandlers.UserSessionAuth(userSvc)) // opaque mode
+```
+
+Write your own to authenticate from a gateway header, an mTLS certificate, or a session your own framework issued — authit does not need to know. Return `ErrNoToken` or `ErrInvalidToken` for "not authenticated" (401) and anything else for "the check could not be performed" (500); `StatusFor` sorts them.
+
+That's the whole package: `BearerToken`, `Validate`, `StatusFor`, `Authenticator`. No `http.Handler`, no context key, no opinion about your error envelope. Note that `Validate` accepts an impersonation token (`claims.IsImpersonation()`, minted via `superuser.Impersonate`) — it's genuine, so whether acting-as is allowed on a given route is yours to check. If you want revocation to take effect before token expiry, re-resolve the principal from your own storage and treat claims beyond the subject as hints.
 
 ### Refresh-token cookies
 

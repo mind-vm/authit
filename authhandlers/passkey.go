@@ -1,6 +1,7 @@
 package authhandlers
 
 import (
+	"github.com/mind-vm/authit/authithttp"
 	"net/http"
 
 	authitjwt "github.com/mind-vm/authit/jwt"
@@ -19,8 +20,8 @@ const (
 // PasskeyHandler serves WebAuthn registration, login and management.
 type PasskeyHandler struct {
 	ceremonyBase
-	svc      *passkey.Service
-	verifier authitjwt.Verifier
+	svc  *passkey.Service
+	auth authithttp.Authenticator
 }
 
 // NewPasskeyHandler builds the passkey route group.
@@ -60,7 +61,7 @@ type PasskeyHandler struct {
 // registration ceremony proves possession of an authenticator and nothing
 // about whose account it belongs on. Exposed unauthenticated, it lets
 // anybody add their own passkey to somebody else's account.
-func NewPasskeyHandler(svc *passkey.Service, verifier authitjwt.Verifier, issuer SessionIssuer, opts ...Option) http.Handler {
+func NewPasskeyHandler(svc *passkey.Service, auth authithttp.Authenticator, issuer SessionIssuer, opts ...Option) http.Handler {
 	if issuer == nil {
 		panic("authit/authhandlers: NewPasskeyHandler requires a SessionIssuer")
 	}
@@ -76,17 +77,17 @@ func NewPasskeyHandler(svc *passkey.Service, verifier authitjwt.Verifier, issuer
 		// Scoped to "/" because registration lives under /me and login
 		// does not; a narrower path would not cover both.
 		ceremonyBase: ceremonyBase{issuer: issuer, cookiePath: "/", insecure: o.insecure, key: o.ceremonyKey},
-		svc:          svc, verifier: verifier,
+		svc:          svc, auth: auth,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /passkeys/login/begin", h.beginLogin)
 	mux.HandleFunc("POST /passkeys/login/finish", h.finishLogin)
-	mux.HandleFunc("POST /me/passkeys/register/begin", requireUser(verifier, h.beginRegistration))
-	mux.HandleFunc("POST /me/passkeys/register/finish", requireUser(verifier, h.finishRegistration))
-	mux.HandleFunc("GET /me/passkeys", requireUser(verifier, h.list))
-	mux.HandleFunc("PATCH /me/passkeys/{id}", requireUser(verifier, h.rename))
-	mux.HandleFunc("DELETE /me/passkeys/{id}", requireUser(verifier, h.remove))
+	mux.HandleFunc("POST /me/passkeys/register/begin", requireUser(auth, h.beginRegistration))
+	mux.HandleFunc("POST /me/passkeys/register/finish", requireUser(auth, h.finishRegistration))
+	mux.HandleFunc("GET /me/passkeys", requireUser(auth, h.list))
+	mux.HandleFunc("PATCH /me/passkeys/{id}", requireUser(auth, h.rename))
+	mux.HandleFunc("DELETE /me/passkeys/{id}", requireUser(auth, h.remove))
 	return mux
 }
 

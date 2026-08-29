@@ -293,6 +293,15 @@ func (s *Service) rehashIfNeeded(ctx context.Context, u *store.User, password st
 // Refresh exchanges a valid, unrevoked refresh token for a new token pair,
 // rotating the refresh token (the old one is revoked).
 func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddress string) (TokenPair, error) {
+	if s.cfg.SessionMode == SessionModeOpaque {
+		// Refused rather than quietly rotating. In opaque mode the session
+		// token is the credential; rotating it on every refresh would
+		// invalidate the token the caller is still using, and rotating it
+		// on demand is a facility nothing needs. A caller reaching here has
+		// wired a JWT-mode flow against an opaque-mode service, and should
+		// find out now.
+		return TokenPair{}, ErrNotOpaqueSession
+	}
 	hash := authitcrypto.HashToken(refreshToken)
 	t, err := s.stores.RefreshTokens.GetRefreshTokenByHash(ctx, hash)
 	if err != nil {
@@ -392,6 +401,14 @@ func (s *Service) issueTokenPair(ctx context.Context, userID, email, userAgent, 
 	}
 	if err := s.stores.RefreshTokens.CreateRefreshToken(ctx, rt); err != nil {
 		return TokenPair{}, err
+	}
+
+	if s.cfg.SessionMode == SessionModeOpaque {
+		// One credential. The row just written is the session, and the
+		// token that names it is what the caller carries -- there is
+		// nothing to exchange it for, so RefreshToken stays empty rather
+		// than repeating it under a second name.
+		return TokenPair{AccessToken: rawRefresh, ExpiresAt: rt.ExpiresAt}, nil
 	}
 
 	expiresAt := now.Add(s.cfg.AccessTokenTTL)

@@ -3,6 +3,7 @@ package memstore
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/mind-vm/authit/store"
 )
@@ -51,6 +52,20 @@ func (s *RefreshTokenStore) RevokeRefreshToken(_ context.Context, id string) err
 	}
 	now := nowFunc()
 	t.RevokedAt = &now
+	return nil
+}
+
+// TouchRefreshToken extends a live token, and refuses a revoked one under
+// the same lock that reads it -- otherwise a session revoked between a
+// request's lookup and its extension would come back with a fresh lifetime.
+func (s *RefreshTokenStore) TouchRefreshToken(_ context.Context, id string, expiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.byID[id]
+	if !ok || t.RevokedAt != nil {
+		return store.ErrNotFound
+	}
+	t.ExpiresAt = expiresAt
 	return nil
 }
 

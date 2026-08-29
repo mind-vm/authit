@@ -45,6 +45,21 @@ type RefreshTokenStore interface {
 	CreateRefreshToken(ctx context.Context, t *RefreshToken) error
 	GetRefreshTokenByHash(ctx context.Context, hash string) (*RefreshToken, error)
 	RevokeRefreshToken(ctx context.Context, id string) error
+	// TouchRefreshToken pushes a token's expiry out to expiresAt, and
+	// reports ErrNotFound if it is gone or already revoked.
+	//
+	// It exists for the sliding expiry of user.SessionModeOpaque, where
+	// this row is the session and using it keeps it alive. Refusing a
+	// revoked row matters: without that check a session revoked between a
+	// request's lookup and its extension would be quietly resurrected with
+	// a fresh lifetime. In SQL:
+	//
+	//	UPDATE refresh_tokens SET expires_at = $2
+	//	 WHERE id = $1 AND revoked_at IS NULL
+	//
+	// Nothing calls it in the default SessionModeJWT, where a refresh
+	// token is rotated rather than extended.
+	TouchRefreshToken(ctx context.Context, id string, expiresAt time.Time) error
 	RevokeAllUserRefreshTokens(ctx context.Context, userID string) error
 	ListActiveRefreshTokens(ctx context.Context, userID string) ([]*RefreshToken, error)
 }

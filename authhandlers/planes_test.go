@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/mind-vm/authit/authithttp"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -138,14 +139,14 @@ func TestTeamRoutesRequireAnAuthorizer(t *testing.T) {
 			t.Fatal("NewTeamHandler must refuse a nil TeamAuthorizer")
 		}
 	}()
-	authhandlers.NewTeamHandler(p.teams, p.signer, nil)
+	authhandlers.NewTeamHandler(p.teams, authithttp.VerifierAuth(p.signer), nil)
 }
 
 // TestOutsiderCannotManageAnotherTeam is the privilege-escalation case the
 // authorizer exists to prevent.
 func TestOutsiderCannotManageAnotherTeam(t *testing.T) {
 	p := newPlanes(t)
-	h := authhandlers.NewTeamHandler(p.teams, p.signer, authhandlers.RoleAuthorizer{Teams: p.teams})
+	h := authhandlers.NewTeamHandler(p.teams, authithttp.VerifierAuth(p.signer), authhandlers.RoleAuthorizer{Teams: p.teams})
 
 	_, ownerToken := p.login(t, "owner@example.com")
 	_, outsiderToken := p.login(t, "outsider@example.com")
@@ -194,7 +195,7 @@ func TestOutsiderCannotManageAnotherTeam(t *testing.T) {
 func TestPlainMemberCannotManageMembers(t *testing.T) {
 	ctx := context.Background()
 	p := newPlanes(t)
-	h := authhandlers.NewTeamHandler(p.teams, p.signer, authhandlers.RoleAuthorizer{Teams: p.teams})
+	h := authhandlers.NewTeamHandler(p.teams, authithttp.VerifierAuth(p.signer), authhandlers.RoleAuthorizer{Teams: p.teams})
 
 	ownerID, ownerToken := p.login(t, "owner@example.com")
 	memberUserID, memberToken := p.login(t, "member@example.com")
@@ -235,7 +236,7 @@ func TestPlainMemberCannotManageMembers(t *testing.T) {
 func TestInvitationCannotBeAcceptedByTheWrongAccount(t *testing.T) {
 	ctx := context.Background()
 	p := newPlanes(t)
-	h := authhandlers.NewTeamHandler(p.teams, p.signer, authhandlers.RoleAuthorizer{Teams: p.teams})
+	h := authhandlers.NewTeamHandler(p.teams, authithttp.VerifierAuth(p.signer), authhandlers.RoleAuthorizer{Teams: p.teams})
 
 	ownerID, ownerToken := p.login(t, "owner@example.com")
 	_, attackerToken := p.login(t, "attacker@example.com")
@@ -266,7 +267,7 @@ func TestInvitationCannotBeAcceptedByTheWrongAccount(t *testing.T) {
 func TestCrossTeamInvitationRevocationIsRefused(t *testing.T) {
 	ctx := context.Background()
 	p := newPlanes(t)
-	h := authhandlers.NewTeamHandler(p.teams, p.signer, authhandlers.RoleAuthorizer{Teams: p.teams})
+	h := authhandlers.NewTeamHandler(p.teams, authithttp.VerifierAuth(p.signer), authhandlers.RoleAuthorizer{Teams: p.teams})
 
 	aliceID, aliceToken := p.login(t, "alice@example.com")
 	bobID, bobToken := p.login(t, "bob@example.com")
@@ -347,7 +348,7 @@ func TestUserTokenIsRejectedByOperatorRoutes(t *testing.T) {
 
 func TestPATRoutesActOnTheCallersOwnTokensOnly(t *testing.T) {
 	p := newPlanes(t)
-	h := authhandlers.NewPATHandler(p.pats, p.signer)
+	h := authhandlers.NewPATHandler(p.pats, authithttp.VerifierAuth(p.signer))
 
 	_, aliceToken := p.login(t, "alice@example.com")
 	_, bobToken := p.login(t, "bob@example.com")
@@ -391,7 +392,7 @@ func TestPATRoutesActOnTheCallersOwnTokensOnly(t *testing.T) {
 
 func newDeviceHandler(t *testing.T, p *planes) http.Handler {
 	t.Helper()
-	return authhandlers.NewDeviceHandler(p.device, p.signer,
+	return authhandlers.NewDeviceHandler(p.device, authithttp.VerifierAuth(p.signer),
 		func(_ context.Context, userID, scope string) (any, error) {
 			return map[string]any{"access_token": "minted-for-" + userID, "token_type": "Bearer", "scope": scope}, nil
 		}, "https://example.com/device")
@@ -526,7 +527,7 @@ func TestDeviceHandlerRefusesIncompleteWiring(t *testing.T) {
 					t.Fatal("NewDeviceHandler should have refused")
 				}
 			}()
-			authhandlers.NewDeviceHandler(p.device, p.signer, c.issuer, c.uri)
+			authhandlers.NewDeviceHandler(p.device, authithttp.VerifierAuth(p.signer), c.issuer, c.uri)
 		})
 	}
 }
@@ -565,7 +566,7 @@ func TestDevicePollingTooFastIsSlowDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("device.NewService: %v", err)
 	}
-	h := authhandlers.NewDeviceHandler(dev, p.signer,
+	h := authhandlers.NewDeviceHandler(dev, authithttp.VerifierAuth(p.signer),
 		func(context.Context, string, string) (any, error) { return map[string]any{}, nil },
 		"https://example.com/device")
 
@@ -606,7 +607,7 @@ func TestDevicePollingTooFastIsSlowDown(t *testing.T) {
 func TestAdminCannotBecomeOwnerAndEvictTheFounder(t *testing.T) {
 	ctx := context.Background()
 	p := newPlanes(t)
-	h := authhandlers.NewTeamHandler(p.teams, p.signer, authhandlers.RoleAuthorizer{Teams: p.teams})
+	h := authhandlers.NewTeamHandler(p.teams, authithttp.VerifierAuth(p.signer), authhandlers.RoleAuthorizer{Teams: p.teams})
 
 	ownerID, ownerToken := p.login(t, "founder@example.com")
 	adminUserID, adminToken := p.login(t, "admin@example.com")
@@ -659,5 +660,82 @@ func TestAdminCannotBecomeOwnerAndEvictTheFounder(t *testing.T) {
 	if w := do(t, h, "PATCH", "/members/"+admin.ID+"/role", ownerToken,
 		map[string]string{"role": "owner"}); w.Code != http.StatusNoContent {
 		t.Fatalf("an owner granting owner got %d, want 204: %s", w.Code, w.Body)
+	}
+}
+
+// TestOpaqueSessionModeOverHTTP wires the user plane in
+// user.SessionModeOpaque and drives it end to end: sign in, use the session
+// on a protected route, revoke it, and find the very next request refused.
+//
+// The JWT-mode equivalent cannot assert that last step, which is the entire
+// point of the mode -- there, a revoked session keeps working until the
+// access token expires.
+func TestOpaqueSessionModeOverHTTP(t *testing.T) {
+	ctx := context.Background()
+	p := newPlanes(t)
+
+	svc, err := user.NewService(user.Stores{
+		Users:              memstore.NewUserStore(),
+		RefreshTokens:      memstore.NewRefreshTokenStore(),
+		PasswordResets:     memstore.NewPasswordResetStore(),
+		EmailVerifications: memstore.NewEmailVerificationStore(),
+		TOTP:               memstore.NewTOTPStore(),
+		PendingTwoFactor:   memstore.NewPendingTwoFactorStore(),
+		Lockouts:           memstore.NewLockoutStore(),
+	}, p.signer, nil, user.Config{
+		SessionMode:       user.SessionModeOpaque,
+		EmailVerification: user.EmailVerificationOptional,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	// UserSessionAuth is the whole wiring difference: a lookup per
+	// request instead of a signature check.
+	h := authhandlers.NewUserHandler(svc, authhandlers.UserSessionAuth(svc))
+
+	u, err := svc.Register(ctx, "opaque@example.com", "correct-horse-battery-staple")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	w := do(t, h, "POST", "/login", "", map[string]string{
+		"email": "opaque@example.com", "password": "correct-horse-battery-staple",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("login: %d %s", w.Code, w.Body)
+	}
+	body := decode[map[string]any](t, w)
+	tokens, _ := body["tokens"].(map[string]any)
+	token, _ := tokens["access_token"].(string)
+	if token == "" {
+		t.Fatalf("expected a session token, got %v", body)
+	}
+	if _, present := tokens["refresh_token"]; present {
+		t.Fatalf("opaque mode must issue one credential, and must not carry the field at all: %v", tokens)
+	}
+
+	// The session works on a protected route.
+	if w := do(t, h, "GET", "/me/sessions", token, nil); w.Code != http.StatusOK {
+		t.Fatalf("listing sessions with a live session: %d %s", w.Code, w.Body)
+	}
+
+	// /refresh is absent, not broken: there is nothing to refresh.
+	if w := do(t, h, "POST", "/refresh", "", map[string]string{"refresh_token": token}); w.Code != http.StatusNotFound {
+		t.Fatalf("POST /refresh in opaque mode = %d, want 404: %s", w.Code, w.Body)
+	}
+
+	sessions, err := svc.ListSessions(ctx, u.ID, token)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected one session, got %+v", sessions)
+	}
+	if w := do(t, h, "DELETE", "/me/sessions/"+sessions[0].ID, token, nil); w.Code != http.StatusNoContent {
+		t.Fatalf("revoking: %d %s", w.Code, w.Body)
+	}
+
+	// The next request. No waiting for anything to expire.
+	if w := do(t, h, "GET", "/me/sessions", token, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("a revoked session got %d on the next request, want 401: %s", w.Code, w.Body)
 	}
 }

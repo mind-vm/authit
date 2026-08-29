@@ -28,8 +28,13 @@ func newUserResponse(u store.User) userResponse {
 }
 
 type tokenResponse struct {
-	AccessToken  string    `json:"access_token"`
-	RefreshToken string    `json:"refresh_token"`
+	AccessToken string `json:"access_token"`
+	// Omitted rather than sent empty, because in
+	// user.SessionModeOpaque there is no refresh token at all -- the
+	// session token is the credential. A present-but-empty field says the
+	// server had one and lost it; an absent field says the mode does not
+	// have them, which is what a client needs to branch on.
+	RefreshToken string    `json:"refresh_token,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 

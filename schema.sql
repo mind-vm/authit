@@ -75,6 +75,15 @@ CREATE TABLE refresh_tokens (
     ip_address text        NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now()
 );
+-- In user.SessionModeOpaque this table is the session store: the token is
+-- the credential a caller carries, checked by lookup on every request,
+-- which is what makes revocation take effect at once rather than when an
+-- access token happens to expire. Sliding expiry is
+--   UPDATE refresh_tokens SET expires_at = $2
+--    WHERE id = $1 AND revoked_at IS NULL
+-- and the revoked_at condition is load-bearing: a session revoked between a
+-- request's lookup and its extension would otherwise come back with a fresh
+-- lifetime, undoing the revocation it raced.
 CREATE INDEX refresh_tokens_user_id_idx ON refresh_tokens (user_id);
 
 -- store.PasswordResetStore / store.PasswordResetToken

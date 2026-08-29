@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/mind-vm/authit/authithttp"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -56,7 +57,7 @@ func newTestServer(t *testing.T) (http.Handler, *user.Service, *capturingEmailer
 	if err != nil {
 		t.Fatalf("user.NewService: %v", err)
 	}
-	return authhandlers.NewUserHandler(svc, signer), svc, emailer
+	return authhandlers.NewUserHandler(svc, authithttp.VerifierAuth(signer)), svc, emailer
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path string, body any, bearer string) *httptest.ResponseRecorder {
