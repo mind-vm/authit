@@ -226,9 +226,12 @@ CREATE INDEX webauthn_challenges_expires_at_idx ON webauthn_challenges (expires_
 5. An expired row is still returned (expiry is the caller's judgement, §4).
 6. **Concurrency: N goroutines consume the same hash; exactly one gets a row.** This is the case the
    port exists for, and the only one that can catch a `Get`-then-`Delete` implementation. It is also
-   the one that means little against `memstore` (a mutex makes it trivially true) and everything
-   against Postgres — so it is the strongest argument yet for the live-database run being part of
-   the loop rather than an optional extra.
+   the one that means little against `memstore` and everything against Postgres.
+
+   Measured, once both could be run against the same broken adapter: `memstore` lets **2 of 32**
+   racers through, Postgres lets **32 of 32**. The fake makes the defect look like an occasional
+   race; the database shows it is unconditional. Treat a green in-memory run of this case as
+   evidence of nothing.
 
 Per the working agreement, each case gets reverted-behaviour proof before it is trusted. Case 6
 specifically must be shown to fail against a deliberate `Get`-then-`Delete` adapter, or it is not

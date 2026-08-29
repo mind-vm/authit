@@ -946,6 +946,10 @@ package that can see both. Nothing below the HTTP layer learned about HTTP.
 *Not in scope, deliberately:* `superuser` stays JWT-only, `pat` already validates by lookup and
 needed nothing, and there is no `freshAge` / re-authentication-for-sensitive-routes.
 
+*Verified against Postgres.* `TouchRefreshToken`'s `revoked_at IS NULL` predicate — the thing
+standing between a revocation and the request racing it — is exercised by the reference-schema
+conformance run, not only by the in-memory fake.
+
 *Changed:* `authithttp/authenticator.go` (new), `user/config.go`, `user/sessions.go`,
 `user/register_login.go`, `user/errors.go`, `store/user.go`, `memstore/refresh_tokens.go`,
 `sqlbstore/refreshtoken.go`, `storetest/user.go`, `authhandlers/` (six constructors, `dto.go`),
@@ -1036,12 +1040,14 @@ scheduler simply did not interleave. At 32 racers it fails on the first round. T
 time on this branch that a security test has had to be shown failing before it could be believed,
 and the second where the first version was measuring nothing.
 
-*And a caveat.* The `sqlbstore` adapter compiles and vets but is **unverified against a live
-database**: Docker stopped partway through this work. Its atomicity does not come from
-`DELETE … RETURNING` — sqlb surfaces returned rows only to hooks — but from the affected-row count
-of the delete deciding who won, which is precisely the kind of reasoning that ought not to be
-trusted until it has run. The suite is wired into the reference-schema conformance run and will
-exercise it the moment a Postgres is reachable.
+*Verified against Postgres, and the number is the argument.* The `sqlbstore` adapter's atomicity does
+not come from `DELETE … RETURNING` — sqlb surfaces returned rows only to hooks — but from the
+delete's own result deciding who won, which is exactly the kind of reasoning that should not be
+believed until it has run. It has now run, under `-race`. Against a deliberately broken version, in
+which the read decides and the delete is an afterthought, **32 of 32 concurrent consumers redeem the
+same challenge.** The in-memory store lets 2 of 32 through for the same defect. So the fake makes
+this look like a rare race and the database shows it is total, which is the whole case for the live
+run in one number.
 
 **S4.3 — A team admin could become owner and evict the founder.** ✅ `RoleAuthorizer` granted
 `TeamActionManageMembers` to owners and admins alike, and `updateMemberRole` passed `req.Role`

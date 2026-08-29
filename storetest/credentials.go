@@ -587,8 +587,16 @@ func RunWebAuthnChallengeStore(t *testing.T, newStore func(*testing.T) store.Web
 		s := newStore(t)
 		fx.ensureUser(t, id(1))
 		user := id(1)
-		requireNoError(t, "CreateWebAuthnChallenge", s.CreateWebAuthnChallenge(ctx(),
-			mk(id(41), "hash-a", &user, time.Now().Add(time.Minute))))
+		rec := mk(id(41), "hash-a", &user, time.Now().Add(time.Minute))
+		requireNoError(t, "CreateWebAuthnChallenge", s.CreateWebAuthnChallenge(ctx(), rec))
+		// The store may assign the id -- schema.sql defaults it to
+		// gen_random_uuid(), and Create writes the stored row back over
+		// the caller's. So rec.ID after this call is the authoritative
+		// one, and a suite that compares against the id it passed in is
+		// asserting a promise the port does not make.
+		if rec.ID == "" {
+			t.Fatal("Create must leave the stored id on the struct")
+		}
 
 		got, err := s.ConsumeWebAuthnChallenge(ctx(), "hash-a")
 		requireNoError(t, "ConsumeWebAuthnChallenge", err)
@@ -619,17 +627,17 @@ func RunWebAuthnChallengeStore(t *testing.T, newStore func(*testing.T) store.Web
 
 	t.Run("consuming one leaves the others", func(t *testing.T) {
 		s := newStore(t)
-		requireNoError(t, "create a", s.CreateWebAuthnChallenge(ctx(),
-			mk(id(41), "hash-a", nil, time.Now().Add(time.Minute))))
-		requireNoError(t, "create b", s.CreateWebAuthnChallenge(ctx(),
-			mk(id(42), "hash-b", nil, time.Now().Add(time.Minute))))
+		a := mk(id(41), "hash-a", nil, time.Now().Add(time.Minute))
+		b := mk(id(42), "hash-b", nil, time.Now().Add(time.Minute))
+		requireNoError(t, "create a", s.CreateWebAuthnChallenge(ctx(), a))
+		requireNoError(t, "create b", s.CreateWebAuthnChallenge(ctx(), b))
 
 		_, err := s.ConsumeWebAuthnChallenge(ctx(), "hash-a")
 		requireNoError(t, "consume a", err)
 		got, err := s.ConsumeWebAuthnChallenge(ctx(), "hash-b")
 		requireNoError(t, "consume b", err)
-		if got.ID != id(42) {
-			t.Fatalf("consumed the wrong row: %s", got.ID)
+		if got.ID != b.ID {
+			t.Fatalf("consumed %s, want b (%s)", got.ID, b.ID)
 		}
 	})
 
@@ -639,12 +647,12 @@ func RunWebAuthnChallengeStore(t *testing.T, newStore func(*testing.T) store.Web
 		// it gone, and would make "consumed" and "expired" different
 		// states for a thing that has only one.
 		s := newStore(t)
-		requireNoError(t, "CreateWebAuthnChallenge", s.CreateWebAuthnChallenge(ctx(),
-			mk(id(41), "hash-a", nil, time.Now().Add(-time.Hour))))
+		rec := mk(id(41), "hash-a", nil, time.Now().Add(-time.Hour))
+		requireNoError(t, "CreateWebAuthnChallenge", s.CreateWebAuthnChallenge(ctx(), rec))
 		got, err := s.ConsumeWebAuthnChallenge(ctx(), "hash-a")
 		requireNoError(t, "ConsumeWebAuthnChallenge", err)
-		if got.ID != id(41) {
-			t.Fatalf("got %s, want %s", got.ID, id(41))
+		if got.ID != rec.ID {
+			t.Fatalf("got %s, want %s", got.ID, rec.ID)
 		}
 	})
 
@@ -669,8 +677,8 @@ func RunWebAuthnChallengeStore(t *testing.T, newStore func(*testing.T) store.Web
 		s := newStore(t)
 		for round := range rounds {
 			hash := fmt.Sprintf("hash-%d", round)
-			requireNoError(t, "CreateWebAuthnChallenge", s.CreateWebAuthnChallenge(ctx(),
-				mk(id(41), hash, nil, time.Now().Add(time.Minute))))
+			rec := mk(id(41), hash, nil, time.Now().Add(time.Minute))
+			requireNoError(t, "CreateWebAuthnChallenge", s.CreateWebAuthnChallenge(ctx(), rec))
 
 			var start sync.WaitGroup
 			var done sync.WaitGroup
@@ -693,8 +701,8 @@ func RunWebAuthnChallengeStore(t *testing.T, newStore func(*testing.T) store.Web
 				switch {
 				case err == nil:
 					won++
-					if rows[i] == nil || rows[i].ID != id(41) {
-						t.Fatalf("winner %d got %v", i, rows[i])
+					if rows[i] == nil || rows[i].ID != rec.ID {
+						t.Fatalf("winner %d got %v, want the row just created (%s)", i, rows[i], rec.ID)
 					}
 				case errors.Is(err, store.ErrNotFound):
 				default:
