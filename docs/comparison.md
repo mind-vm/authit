@@ -1068,9 +1068,14 @@ Signing the cookie closes the forgery half completely and bounds the rest: the a
 choose the challenge or suppress the expiry, so a replay now requires capturing *both* the cookie and
 the body, and works only inside the 60-second ceremony window the enforced `Expires` imposes. **The
 residual is real and is not closed**: an attacker holding both, within that window, against a
-counter-0 authenticator, still replays. Closing it needs server-side state — a consumed-challenge
-record — which contradicts this package's stated design of holding no ceremony storage, and is a
-decision the host should make rather than one to smuggle in under a security fix.
+counter-0 authenticator, still replays.
+
+Closing it needs server-side state. The package doc says authit does not keep ceremony state because
+that would mean "another store port and a cleanup problem" — but `store.PendingTwoFactorStore` is
+exactly that, two tables over, for exactly this reason, so the passkey ceremony is the outlier rather
+than the rule. Specified in [webauthn-challenge-store.md](webauthn-challenge-store.md) as an optional
+port, which is also how better-auth solves it: its cookie holds only a random id, the challenge lives
+in a `verification` row, and `consumeVerificationValue` deletes and returns it in one atomic step.
 
 **S4.3 — A team admin could become owner and evict the founder.** ✅ `RoleAuthorizer` granted
 `TeamActionManageMembers` to owners and admins alike, and `updateMemberRole` passed `req.Role`
