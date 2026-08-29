@@ -54,7 +54,38 @@ type EmailLoginStore interface {
 	// address, which is how a code redemption finds the record it must
 	// count a failed guess against.
 	GetEmailLoginTokenByEmail(ctx context.Context, email string, kind EmailLoginKind) (*EmailLoginToken, error)
-	UpdateEmailLoginToken(ctx context.Context, t *EmailLoginToken) error
+	// MarkEmailLoginTokenUsed marks the token used, and reports
+	// ErrNotFound if it was already used or is gone.
+	//
+	// This is a compare-and-set, not an update, and the difference is the
+	// single-use property. Reading a token, seeing UsedAt is nil, and
+	// writing it back lets two concurrent redemptions of one link both
+	// observe an unused token and both succeed -- one credential, two
+	// sessions. In SQL:
+	//
+	//	UPDATE email_login_tokens SET used_at = $2
+	//	 WHERE id = $1 AND used_at IS NULL
+	//
+	// and no rows affected means somebody else won, which is ErrNotFound.
+	// Callers treat winning this as the authorisation to proceed, so an
+	// implementation that always reports success has removed the control
+	// rather than weakened it.
+	MarkEmailLoginTokenUsed(ctx context.Context, id string, usedAt time.Time) error
+
+	// IncrementEmailLoginTokenAttempts adds one to the token's failed-guess
+	// count and returns the new value, or ErrNotFound if it is gone.
+	//
+	// Atomic for the same reason, and it matters more here: the returned
+	// count is what decides when a six-digit code is burned, and read-then-
+	// write loses increments under concurrency. An attacker guessing in
+	// parallel would get many tries charged as one, which is the entire
+	// budget MaxCodeAttempts exists to impose. In SQL:
+	//
+	//	UPDATE email_login_tokens SET attempts = attempts + 1
+	//	 WHERE id = $1 RETURNING attempts
+	//
+	// Return the value the database computed, never one added in Go.
+	IncrementEmailLoginTokenAttempts(ctx context.Context, id string) (int, error)
 	// DeleteEmailLoginTokens removes every outstanding token of that kind
 	// for the address.
 	//

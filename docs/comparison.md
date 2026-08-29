@@ -1020,6 +1020,31 @@ falls to its `default` case and denies, which is the safe direction.
 Deliberately *not* done: a whitelist of role strings. Arbitrary roles are a documented decision
 (`schema.sql`, `store/team.go`); only `RoleOwner` is special, and only it is special-cased.
 
+**S4.5 — Email-login tokens were spent by reading and writing them back.** ✅ Found by the
+code-review pass, not the security one, and it is the same defect S4.2 was — one credential
+redeemable twice — in the package next door. `consume` checked `UsedAt == nil` and then wrote
+`UsedAt`, so two redemptions of one magic link both saw it unused and both succeeded. The
+failed-guess counter had the identical shape and mattered more: read `Attempts`, write `Attempts+1`,
+and guesses arriving together are charged as one — which is the whole budget that, per the package's
+own doc, is the only reason a six-digit code is safe at all.
+
+`store.EmailLoginStore.UpdateEmailLoginToken` is replaced by two methods that each do one atomic
+thing: `MarkEmailLoginTokenUsed` (compare-and-set on `used_at IS NULL`, `ErrNotFound` if lost) and
+`IncrementEmailLoginTokenAttempts` (returns the count the store computed). Winning the first is now
+what authorises a redemption, so it happens before an account is resolved or created. The port got
+narrower, not wider.
+
+*The measurement that mattered.* The concurrency case for this was written as one round of 32
+racers, the shape that worked for the challenge store. Against a store that reads, unlocks and then
+writes it passed — so it was measured rather than argued about: **that implementation slips through
+in roughly four rounds out of five**, because the window here is a mutex release rather than a
+network round trip. At 200 rounds it is caught reliably. A single-round version of this test is
+worse than none, since it reports a green tick for a magic link that signs two people in.
+
+That is the fourth verification step on this branch to be wrong on the first attempt, and the second
+where a mutated implementation failed to *compile* and the harness read the build error as a pass.
+The proof loop now builds before it believes a result.
+
 **S4.4 — `memstore.DeleteMember` left its secondary indexes holding freed ids.** ✅ Not a
 vulnerability — a crash, found while reproducing S4.3. `DeleteMember` removed the id from `byID`
 only, so `GetMemberByUserAndTeam` and `ListMembersByTeam` dereferenced a nil map value and panicked

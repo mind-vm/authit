@@ -1,6 +1,9 @@
 package storetest
 
 import (
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -308,16 +311,23 @@ func RunEmailLoginStore(t *testing.T, newStore func(*testing.T) store.EmailLogin
 		}
 	})
 
-	t.Run("attempt counts persist", func(t *testing.T) {
+	t.Run("attempt counts persist and come back from the store", func(t *testing.T) {
 		// A six-digit code survives only because wrong guesses are
-		// counted. An update that does not stick means the counter is
-		// always zero and the code is guessable without limit.
+		// counted. An increment that does not stick means the counter is
+		// always zero and the code is guessable without limit -- and a
+		// returned count that was computed anywhere but in the store is
+		// the same bug wearing a different hat.
 		s := newStore(t)
 		tok := mk(id(51), "a@example.com", "h", store.EmailLoginCode, time.Hour)
 		requireNoError(t, "create", s.CreateEmailLoginToken(ctx(), tok))
 
-		tok.Attempts = 3
-		requireNoError(t, "UpdateEmailLoginToken", s.UpdateEmailLoginToken(ctx(), tok))
+		for want := 1; want <= 3; want++ {
+			got, err := s.IncrementEmailLoginTokenAttempts(ctx(), id(51))
+			requireNoError(t, "IncrementEmailLoginTokenAttempts", err)
+			if got != want {
+				t.Fatalf("increment returned %d, want %d", got, want)
+			}
+		}
 		got, err := s.GetEmailLoginTokenByEmail(ctx(), "a@example.com", store.EmailLoginCode)
 		requireNoError(t, "GetEmailLoginTokenByEmail", err)
 		if got.Attempts != 3 {
@@ -325,18 +335,132 @@ func RunEmailLoginStore(t *testing.T, newStore func(*testing.T) store.EmailLogin
 		}
 	})
 
-	t.Run("used tokens are still returned", func(t *testing.T) {
+	t.Run("incrementing a token that is gone reports ErrNotFound", func(t *testing.T) {
+		s := newStore(t)
+		_, err := s.IncrementEmailLoginTokenAttempts(ctx(), id(99))
+		requireNotFound(t, "IncrementEmailLoginTokenAttempts", err)
+	})
+
+	t.Run("marking used is a compare-and-set", func(t *testing.T) {
+		// The single-use property lives here and nowhere else. A store
+		// that marks used unconditionally lets two redemptions of one
+		// magic link both succeed -- one credential, two sessions.
 		s := newStore(t)
 		tok := mk(id(51), "a@example.com", "h", store.EmailLoginLink, time.Hour)
 		requireNoError(t, "create", s.CreateEmailLoginToken(ctx(), tok))
-		used := time.Now()
-		tok.UsedAt = &used
-		requireNoError(t, "update", s.UpdateEmailLoginToken(ctx(), tok))
 
+		requireNoError(t, "first mark", s.MarkEmailLoginTokenUsed(ctx(), id(51), time.Now()))
+		requireNotFound(t, "second mark", s.MarkEmailLoginTokenUsed(ctx(), id(51), time.Now()))
+
+		// Still readable afterwards: the service reads UsedAt, and the row
+		// is evidence for an operator either way.
 		got, err := s.GetEmailLoginTokenByHash(ctx(), "h")
 		requireNoError(t, "GetEmailLoginTokenByHash after use", err)
 		if got.UsedAt == nil {
 			t.Fatal("UsedAt did not persist; the service reads it to enforce single use")
+		}
+	})
+
+	t.Run("marking used is atomic: exactly one redemption wins", func(t *testing.T) {
+		// Sequential compare-and-set is easy to satisfy by reading and
+		// then writing, which is exactly the implementation that fails
+		// under concurrency.
+		//
+		// Repeated, because one round is not enough. A store that reads,
+		// releases its lock, and then writes was measured letting a second
+		// redemption through in only about a fifth of rounds -- so a
+		// single round passes it four times in five, which is worse than
+		// having no test at all. Rounds are cheap; a false pass here is a
+		// magic link that signs two people in.
+		const (
+			racers = 32
+			rounds = 200
+		)
+		s := newStore(t)
+		for round := range rounds {
+			rowID := fmt.Sprintf("%s-%d", id(51), round)
+			requireNoError(t, "create", s.CreateEmailLoginToken(ctx(),
+				mk(rowID, "a@example.com", fmt.Sprintf("h-%d", round), store.EmailLoginLink, time.Hour)))
+
+			var start, done sync.WaitGroup
+			start.Add(1)
+			results := make([]error, racers)
+			for i := range racers {
+				done.Add(1)
+				go func() {
+					defer done.Done()
+					start.Wait()
+					results[i] = s.MarkEmailLoginTokenUsed(ctx(), rowID, time.Now())
+				}()
+			}
+			start.Done()
+			done.Wait()
+
+			won := 0
+			for i, err := range results {
+				switch {
+				case err == nil:
+					won++
+				case errors.Is(err, store.ErrNotFound):
+				default:
+					t.Fatalf("redeemer %d: unexpected error %v", i, err)
+				}
+			}
+			if won != 1 {
+				t.Fatalf("round %d: %d of %d redemptions succeeded, want exactly 1; "+
+					"marking used must be a compare-and-set, not a read then a write", round, won, racers)
+			}
+		}
+	})
+
+	t.Run("attempts are not lost when guesses arrive together", func(t *testing.T) {
+		// Read-then-write loses increments under concurrency, so an
+		// attacker guessing in parallel has many tries charged as one --
+		// the entire budget MaxCodeAttempts exists to impose. Repeated for
+		// the same reason as the case above.
+		const (
+			racers = 32
+			rounds = 50
+		)
+		s := newStore(t)
+		for round := range rounds {
+			rowID := fmt.Sprintf("%s-%d", id(51), round)
+			email := fmt.Sprintf("a%d@example.com", round)
+			requireNoError(t, "create", s.CreateEmailLoginToken(ctx(),
+				mk(rowID, email, fmt.Sprintf("h-%d", round), store.EmailLoginCode, time.Hour)))
+
+			var start, done sync.WaitGroup
+			start.Add(1)
+			seen := make([]int, racers)
+			for i := range racers {
+				done.Add(1)
+				go func() {
+					defer done.Done()
+					start.Wait()
+					if n, err := s.IncrementEmailLoginTokenAttempts(ctx(), rowID); err == nil {
+						seen[i] = n
+					}
+				}()
+			}
+			start.Done()
+			done.Wait()
+
+			got, err := s.GetEmailLoginTokenByEmail(ctx(), email, store.EmailLoginCode)
+			requireNoError(t, "GetEmailLoginTokenByEmail", err)
+			if got.Attempts != racers {
+				t.Fatalf("round %d: Attempts = %d after %d concurrent guesses; increments must not be lost",
+					round, got.Attempts, racers)
+			}
+			// Every caller must also have been told a distinct number, or
+			// two guesses shared a budget slot.
+			distinct := map[int]bool{}
+			for _, n := range seen {
+				if n != 0 && distinct[n] {
+					t.Fatalf("round %d: two callers were both told attempt %d; "+
+						"each guess must get its own count", round, n)
+				}
+				distinct[n] = true
+			}
 		}
 	})
 

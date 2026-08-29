@@ -3,6 +3,7 @@ package memstore
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/mind-vm/authit/store"
 )
@@ -66,16 +67,33 @@ func (s *EmailLoginStore) GetEmailLoginTokenByEmail(_ context.Context, email str
 	return nil, store.ErrNotFound
 }
 
-func (s *EmailLoginStore) UpdateEmailLoginToken(_ context.Context, t *store.EmailLoginToken) error {
+// MarkEmailLoginTokenUsed marks used under one lock, and refuses a token
+// already marked. Both halves happen without releasing the lock, which is
+// what makes it a compare-and-set rather than a read followed by a write.
+func (s *EmailLoginStore) MarkEmailLoginTokenUsed(_ context.Context, id string, usedAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.byID[t.ID]; !ok {
+	t, ok := s.byID[id]
+	if !ok || t.UsedAt != nil {
 		return store.ErrNotFound
 	}
 	cp := *t
-	s.byID[t.ID] = &cp
-	s.byHash[t.TokenHash] = t.ID
+	cp.UsedAt = &usedAt
+	s.byID[id] = &cp
 	return nil
+}
+
+func (s *EmailLoginStore) IncrementEmailLoginTokenAttempts(_ context.Context, id string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.byID[id]
+	if !ok {
+		return 0, store.ErrNotFound
+	}
+	cp := *t
+	cp.Attempts++
+	s.byID[id] = &cp
+	return cp.Attempts, nil
 }
 
 func (s *EmailLoginStore) DeleteEmailLoginTokens(_ context.Context, email string, kind store.EmailLoginKind) error {

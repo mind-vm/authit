@@ -290,6 +290,15 @@ CREATE TABLE email_login_tokens (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX email_login_tokens_email_kind_idx ON email_login_tokens (email, kind);
+-- used_at and attempts are both written by compare-and-set, never by
+-- reading the row and writing it back. Redeeming is
+--   UPDATE ... SET used_at = $2 WHERE id = $1 AND used_at IS NULL
+-- and no rows affected means another request redeemed it first; counting a
+-- wrong guess is
+--   UPDATE ... SET attempts = attempts + 1 WHERE id = $1 RETURNING attempts
+-- with the returned value decisive. Read-then-write lets one magic link
+-- sign two people in, and lets parallel guesses share a single charge
+-- against the budget that is the only thing making six digits safe.
 
 -- ---------------------------------------------------------------------------
 -- team plane -- team.Stores

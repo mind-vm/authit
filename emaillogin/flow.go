@@ -134,8 +134,20 @@ func (s *Service) RedeemSignInCode(ctx context.Context, email, code string) (Res
 	// Constant time, though the comparison is between hashes rather than
 	// between the codes themselves.
 	if subtle.ConstantTimeCompare([]byte(t.TokenHash), []byte(codeHash(email, code))) != 1 {
-		t.Attempts++
-		if t.Attempts >= s.cfg.MaxCodeAttempts {
+		// The count comes back from the store rather than being computed
+		// here. Reading Attempts and writing Attempts+1 loses increments
+		// when guesses arrive together, and an attacker guessing in
+		// parallel would have many tries charged as one -- which is the
+		// whole budget this counter exists to impose.
+		attempts, err := s.stores.Tokens.IncrementEmailLoginTokenAttempts(ctx, t.ID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				// Burned by a concurrent guess between the read and now.
+				return Result{}, ErrInvalidToken
+			}
+			return Result{}, err
+		}
+		if attempts >= s.cfg.MaxCodeAttempts {
 			// Burn the token rather than merely refusing this attempt. A
 			// counter that only gates would leave the code live for the
 			// next request, and the whole budget is the point.
@@ -144,9 +156,6 @@ func (s *Service) RedeemSignInCode(ctx context.Context, email, code string) (Res
 			}
 			s.log(ctx, audit.EventEmailLoginExhausted, "", email, string(store.EmailLoginCode))
 			return Result{}, ErrInvalidToken
-		}
-		if err := s.stores.Tokens.UpdateEmailLoginToken(ctx, t); err != nil {
-			return Result{}, err
 		}
 		return Result{}, ErrInvalidToken
 	}
@@ -159,6 +168,18 @@ func usable(t *store.EmailLoginToken) bool {
 }
 
 // consume marks a token used and resolves or creates the account.
+//
+// usable() was checked before this, but a check is not a claim: two
+// redemptions of one link can both read an unused token. Marking it used is
+// a compare-and-set, and winning that is what authorises the rest -- so it
+// happens before an account is resolved or created, and a caller that loses
+// gets the same ErrInvalidToken as one presenting a token that was never
+// real.
+//
+// The cost is that a failure after this point burns the credential: the
+// user asks for another link rather than retrying this one. That is the
+// safe direction, and the only alternative -- marking used last -- is the
+// race itself.
 func (s *Service) consume(ctx context.Context, t *store.EmailLoginToken) (Result, error) {
 	u, err := s.stores.Users.GetUserByEmail(ctx, t.Email)
 	switch {
@@ -167,6 +188,9 @@ func (s *Service) consume(ctx context.Context, t *store.EmailLoginToken) (Result
 		if s.cfg.DisableSignUp {
 			// Refused here rather than at request time, so the request
 			// endpoint still says nothing about which addresses exist.
+			// Deliberately before the token is spent: sign-up being off is
+			// a standing condition, not something a retry would fix, so
+			// burning the credential would add nothing.
 			return Result{}, ErrSignUpDisabled
 		}
 		return s.signUp(ctx, t)
@@ -174,9 +198,10 @@ func (s *Service) consume(ctx context.Context, t *store.EmailLoginToken) (Result
 		return Result{}, err
 	}
 
-	now := time.Now()
-	t.UsedAt = &now
-	if err := s.stores.Tokens.UpdateEmailLoginToken(ctx, t); err != nil {
+	if err := s.stores.Tokens.MarkEmailLoginTokenUsed(ctx, t.ID, time.Now()); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return Result{}, ErrInvalidToken
+		}
 		return Result{}, err
 	}
 	s.log(ctx, audit.EventEmailLoginSucceeded, u.ID, u.Email, string(t.Kind))
@@ -205,14 +230,23 @@ func (s *Service) signUp(ctx context.Context, t *store.EmailLoginToken) (Result,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
-	t.UsedAt = &now
-
+	// Marking used comes first, and inside the transaction. First, because
+	// winning it is what authorises creating the account -- otherwise two
+	// redemptions of one link race to create the same user and only the
+	// email UNIQUE constraint stands between them, which is a constraint
+	// violation surfacing as a 500 rather than a refusal. Inside, so that a
+	// failed CreateUser rolls the marking back and the user can try again;
+	// without a TxRunner the marking is still atomic on its own, and only
+	// that rollback is lost.
 	if err := store.RunInTx(ctx, s.stores.Tx, func(ctx context.Context) error {
-		if err := s.stores.Users.CreateUser(ctx, u); err != nil {
+		if err := s.stores.Tokens.MarkEmailLoginTokenUsed(ctx, t.ID, now); err != nil {
 			return err
 		}
-		return s.stores.Tokens.UpdateEmailLoginToken(ctx, t)
+		return s.stores.Users.CreateUser(ctx, u)
 	}); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return Result{}, ErrInvalidToken
+		}
 		return Result{}, err
 	}
 	s.log(ctx, audit.EventUserRegistered, u.ID, u.Email, string(t.Kind))
