@@ -121,6 +121,47 @@ type exampleFailedLogin struct {
 
 func (exampleFailedLogin) TableName() string { return "failed_login_attempts" }
 
+type exampleWebAuthnChallenge struct {
+	ID        string    `db:"id" sqlb:"type:uuid,pk,default"`
+	TokenHash string    `db:"token_hash" sqlb:"type:text"`
+	UserID    *string   `db:"user_id" sqlb:"type:uuid"`
+	Data      []byte    `db:"data" sqlb:"type:bytea"`
+	ExpiresAt time.Time `db:"expires_at" sqlb:"type:timestamptz"`
+	CreatedAt time.Time `db:"created_at" sqlb:"type:timestamptz,default"`
+}
+
+func (exampleWebAuthnChallenge) TableName() string { return "webauthn_challenges" }
+
+// exampleWebAuthnChallenges is separate from exampleUserStores because the
+// challenge port belongs to passkey.Stores, not user.Stores -- the passkey
+// flow is not part of the user plane.
+func exampleWebAuthnChallenges(db sqlb.Executor) store.WebAuthnChallengeStore {
+	return sqlbstore.WebAuthnChallengeAdapter[exampleWebAuthnChallenge]{
+		Table: sqlbstore.Table[exampleWebAuthnChallenge, store.WebAuthnChallenge]{
+			ToRow: func(c store.WebAuthnChallenge) exampleWebAuthnChallenge {
+				return exampleWebAuthnChallenge{
+					TokenHash: c.TokenHash, UserID: c.UserID,
+					Data: c.Data, ExpiresAt: c.ExpiresAt,
+				}
+			},
+			FromRow: func(r exampleWebAuthnChallenge) store.WebAuthnChallenge {
+				return store.WebAuthnChallenge{
+					ID: r.ID, TokenHash: r.TokenHash, UserID: r.UserID,
+					Data: r.Data, ExpiresAt: r.ExpiresAt, CreatedAt: r.CreatedAt,
+				}
+			},
+			GetID:    func(c store.WebAuthnChallenge) string { return c.ID },
+			SetID:    func(r exampleWebAuthnChallenge, id string) exampleWebAuthnChallenge { r.ID = id; return r },
+			IDColumn: "id",
+			// A challenge is written once and destroyed by the only
+			// read of it. There is nothing to update.
+			ToUpdateColumns: func(store.WebAuthnChallenge) map[string]any { return nil },
+		},
+		DB:              db,
+		TokenHashColumn: "token_hash",
+	}
+}
+
 // exampleAccountLock is the table with no authit type. LockoutStore needs
 // two tables, and only this one -- the set of currently-locked user ids --
 // is invisible from store/user.go. Its shape is entirely yours; all authit

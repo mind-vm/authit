@@ -1,6 +1,16 @@
 # Spec — `store.WebAuthnChallengeStore`
 
-Status: **proposed**, not implemented. Closes S4.2 in [comparison.md](comparison.md).
+Status: **implemented**. Closes S4.2 in [comparison.md](comparison.md).
+
+Resolved against the spec below: the stateless mode in §5 was **dropped** — `Stores.Challenges` is
+required, not optional, and there is no second mode to document or to run by accident. §10's first
+open question is answered that way; the second stands as written (32 bytes); the third
+(`PendingTwoFactorStore` wanting the same `Consume`) is still open and still deliberate.
+
+One correction to §4 as written: the port said a Get followed by a Delete is never an implementation
+of `Consume`. That is too strong, and the shipped `sqlbstore` adapter relies on the weaker true
+statement — the *delete* must decide, via its affected-row count, rather than the read. A read that
+decides is the broken version. The port doc now says so precisely.
 
 ---
 

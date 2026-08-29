@@ -1,7 +1,11 @@
 package storetest
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -558,5 +562,149 @@ func RunWebAuthnCredentialStore(t *testing.T, newStore func(*testing.T) store.We
 		// who removed a key by mistake should be able to add it back.
 		_, err = s.GetWebAuthnCredentialByCredentialID(ctx(), credID)
 		requireNotFound(t, "GetWebAuthnCredentialByCredentialID after delete", err)
+	})
+}
+
+// RunWebAuthnChallengeStore checks store.WebAuthnChallengeStore.
+//
+// The suite is short because the port is, and one case carries most of the
+// weight: consuming a challenge must be atomic. Everything else here would
+// pass against a map with a Get and a Delete bolted together, and that
+// implementation is exactly the one that lets a captured assertion be
+// replayed.
+func RunWebAuthnChallengeStore(t *testing.T, newStore func(*testing.T) store.WebAuthnChallengeStore, fx Fixtures) {
+	// Binary, not UTF-8, with a zero byte: the ceremony state is a blob
+	// and a text column will mangle it.
+	blob := []byte{0x00, 0x7b, 0xff, 0xfe, 0x22, 0x7d}
+	mk := func(rowID, hash string, userID *string, expires time.Time) *store.WebAuthnChallenge {
+		return &store.WebAuthnChallenge{
+			ID: rowID, TokenHash: hash, UserID: userID, Data: blob,
+			ExpiresAt: expires, CreatedAt: time.Now(),
+		}
+	}
+
+	t.Run("create then consume returns the row", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		user := id(1)
+		requireNoError(t, "CreateWebAuthnChallenge", s.CreateWebAuthnChallenge(ctx(),
+			mk(id(41), "hash-a", &user, time.Now().Add(time.Minute))))
+
+		got, err := s.ConsumeWebAuthnChallenge(ctx(), "hash-a")
+		requireNoError(t, "ConsumeWebAuthnChallenge", err)
+		if !bytes.Equal(got.Data, blob) {
+			t.Fatalf("Data did not round trip: %#v", got.Data)
+		}
+		if got.UserID == nil || *got.UserID != user {
+			t.Fatalf("UserID did not round trip: %v", got.UserID)
+		}
+	})
+
+	t.Run("a consumed challenge is gone", func(t *testing.T) {
+		s := newStore(t)
+		requireNoError(t, "CreateWebAuthnChallenge", s.CreateWebAuthnChallenge(ctx(),
+			mk(id(41), "hash-a", nil, time.Now().Add(time.Minute))))
+		_, err := s.ConsumeWebAuthnChallenge(ctx(), "hash-a")
+		requireNoError(t, "first consume", err)
+
+		_, err = s.ConsumeWebAuthnChallenge(ctx(), "hash-a")
+		requireNotFound(t, "second consume", err)
+	})
+
+	t.Run("an unknown handle is ErrNotFound", func(t *testing.T) {
+		s := newStore(t)
+		_, err := s.ConsumeWebAuthnChallenge(ctx(), "never-existed")
+		requireNotFound(t, "ConsumeWebAuthnChallenge", err)
+	})
+
+	t.Run("consuming one leaves the others", func(t *testing.T) {
+		s := newStore(t)
+		requireNoError(t, "create a", s.CreateWebAuthnChallenge(ctx(),
+			mk(id(41), "hash-a", nil, time.Now().Add(time.Minute))))
+		requireNoError(t, "create b", s.CreateWebAuthnChallenge(ctx(),
+			mk(id(42), "hash-b", nil, time.Now().Add(time.Minute))))
+
+		_, err := s.ConsumeWebAuthnChallenge(ctx(), "hash-a")
+		requireNoError(t, "consume a", err)
+		got, err := s.ConsumeWebAuthnChallenge(ctx(), "hash-b")
+		requireNoError(t, "consume b", err)
+		if got.ID != id(42) {
+			t.Fatalf("consumed the wrong row: %s", got.ID)
+		}
+	})
+
+	t.Run("an expired challenge is still returned", func(t *testing.T) {
+		// Expiry is the caller's judgement, not the store's. Filtering it
+		// here would leave the row behind on the one path that most wants
+		// it gone, and would make "consumed" and "expired" different
+		// states for a thing that has only one.
+		s := newStore(t)
+		requireNoError(t, "CreateWebAuthnChallenge", s.CreateWebAuthnChallenge(ctx(),
+			mk(id(41), "hash-a", nil, time.Now().Add(-time.Hour))))
+		got, err := s.ConsumeWebAuthnChallenge(ctx(), "hash-a")
+		requireNoError(t, "ConsumeWebAuthnChallenge", err)
+		if got.ID != id(41) {
+			t.Fatalf("got %s, want %s", got.ID, id(41))
+		}
+	})
+
+	t.Run("concurrent consumers: exactly one wins", func(t *testing.T) {
+		// The case the port exists for. A Get followed by a Delete passes
+		// every other test in this suite and fails this one, because two
+		// callers can both read before either deletes -- and both then
+		// finish the same ceremony, which is a replayed assertion
+		// accepted twice.
+		//
+		// Repeated, and with more racers than cores, because one round is
+		// not enough to catch it. The window between a read and a delete
+		// is nanoseconds, so a single round of eight goroutines lets a
+		// wrong implementation through most of the time -- measured, not
+		// assumed: the first version of this test ran one round and passed
+		// against a deliberately non-atomic store. Rounds are cheap and a
+		// false pass here is the one that matters.
+		const (
+			racers = 32
+			rounds = 200
+		)
+		s := newStore(t)
+		for round := range rounds {
+			hash := fmt.Sprintf("hash-%d", round)
+			requireNoError(t, "CreateWebAuthnChallenge", s.CreateWebAuthnChallenge(ctx(),
+				mk(id(41), hash, nil, time.Now().Add(time.Minute))))
+
+			var start sync.WaitGroup
+			var done sync.WaitGroup
+			start.Add(1)
+			results := make([]error, racers)
+			rows := make([]*store.WebAuthnChallenge, racers)
+			for i := range racers {
+				done.Add(1)
+				go func() {
+					defer done.Done()
+					start.Wait()
+					rows[i], results[i] = s.ConsumeWebAuthnChallenge(ctx(), hash)
+				}()
+			}
+			start.Done()
+			done.Wait()
+
+			won := 0
+			for i, err := range results {
+				switch {
+				case err == nil:
+					won++
+					if rows[i] == nil || rows[i].ID != id(41) {
+						t.Fatalf("winner %d got %v", i, rows[i])
+					}
+				case errors.Is(err, store.ErrNotFound):
+				default:
+					t.Fatalf("consumer %d: unexpected error %v", i, err)
+				}
+			}
+			if won != 1 {
+				t.Fatalf("round %d: %d of %d consumers got the challenge, want exactly 1; "+
+					"consuming must delete and return in one step", round, won, racers)
+			}
+		}
 	})
 }

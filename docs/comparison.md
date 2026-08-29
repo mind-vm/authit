@@ -1058,24 +1058,41 @@ and took the same path. Only the third version bites — it mints a real session
 `BeginDiscoverableLogin` and encodes it raw, which is what an attacker actually writes and is
 independent of the layout of the thing under test. Verified by reverting the MAC.
 
-**S4.2 — The ceremony challenge is not single-use.** ◐ Same root cause, separate fix. Nothing records
-that a challenge was issued or spent, so the same cookie and body succeed repeatedly, and
-`go-webauthn`'s clone check exempts `authDataCount == 0 && SignCount == 0` — which is every synced
-passkey (iCloud Keychain, Google Password Manager), since a credential synced across devices cannot
-keep a coherent counter.
+**S4.2 — The ceremony challenge is not single-use.** ✅ Same root cause as S4.1, separate fix, and
+the one that needed a design decision rather than a patch. Nothing recorded that a challenge was
+issued, so nothing could record that it was spent; `go-webauthn`'s clone check exempts
+`authDataCount == 0 && SignCount == 0`, which is every synced passkey, since a credential shared
+across devices cannot keep a coherent counter. Signing the cookie bounded it — a replay then needed
+both the cookie and the body, inside the 60-second window — but did not close it.
 
-Signing the cookie closes the forgery half completely and bounds the rest: the attacker can no longer
-choose the challenge or suppress the expiry, so a replay now requires capturing *both* the cookie and
-the body, and works only inside the 60-second ceremony window the enforced `Expires` imposes. **The
-residual is real and is not closed**: an attacker holding both, within that window, against a
-counter-0 authenticator, still replays.
+Closed by `store.WebAuthnChallengeStore`, specified in
+[webauthn-challenge-store.md](webauthn-challenge-store.md). `passkey.Session` is now a 32-byte
+handle; the ceremony state lives in a row that `Finish` redeems exactly once. The port is two
+methods, and the second carries the property: `ConsumeWebAuthnChallenge` deletes and returns, and
+exactly one of N concurrent callers may receive the row.
 
-Closing it needs server-side state. The package doc says authit does not keep ceremony state because
-that would mean "another store port and a cleanup problem" — but `store.PendingTwoFactorStore` is
-exactly that, two tables over, for exactly this reason, so the passkey ceremony is the outlier rather
-than the rule. Specified in [webauthn-challenge-store.md](webauthn-challenge-store.md) as an optional
-port, which is also how better-auth solves it: its cookie holds only a random id, the challenge lives
-in a `verification` row, and `consumeVerificationValue` deletes and returns it in one atomic step.
+*The stateless mode was dropped rather than kept as an option.* The spec proposed keeping it and
+listed the argument against as an open question; the argument won. A documented weaker mode is a
+mode somebody runs, and `passkey.Stores.Challenges` being required costs a breaking change that is
+free today and never will be again.
+
+*What the port is not.* Not shared with T2.4's session store, though an earlier note here suggested
+it: a session is read on every request, listed, refreshed and revoked, while a challenge is written
+once and destroyed by its only read. One port covering both would be wider in exchange for nothing.
+
+*A test that could not fail, caught and fixed.* The conformance suite's atomicity case — N
+goroutines consume one handle, exactly one wins — **passed against a deliberately non-atomic store**
+at eight racers and one round. The window between a read and a delete is nanoseconds and the
+scheduler simply did not interleave. At 32 racers it fails on the first round. This is the third
+time on this branch that a security test has had to be shown failing before it could be believed,
+and the second where the first version was measuring nothing.
+
+*And a caveat.* The `sqlbstore` adapter compiles and vets but is **unverified against a live
+database**: Docker stopped partway through this work. Its atomicity does not come from
+`DELETE … RETURNING` — sqlb surfaces returned rows only to hooks — but from the affected-row count
+of the delete deciding who won, which is precisely the kind of reasoning that ought not to be
+trusted until it has run. The suite is wired into the reference-schema conformance run and will
+exercise it the moment a Postgres is reachable.
 
 **S4.3 — A team admin could become owner and evict the founder.** ✅ `RoleAuthorizer` granted
 `TeamActionManageMembers` to owners and admins alike, and `updateMemberRole` passed `req.Role`

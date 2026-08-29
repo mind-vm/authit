@@ -225,6 +225,47 @@ CREATE TABLE webauthn_credentials (
 );
 CREATE INDEX webauthn_credentials_user_id_idx ON webauthn_credentials (user_id);
 
+-- store.WebAuthnChallengeStore / store.WebAuthnChallenge -- in-flight
+-- ceremonies (passkey package).
+--
+-- A WebAuthn ceremony spans two requests: the browser is handed options and
+-- comes back with a signature over the challenge inside them. The challenge
+-- lives here in between, rather than in the browser's hands, because it is
+-- what the signature is verified against -- and a caller who can substitute
+-- it can present an assertion captured earlier and have it checked against
+-- expectations of its own.
+--
+-- Rows are short-lived (the passkey Config.Timeout, 60s by default) and
+-- consumed on first use. That single statement is the point of the table:
+--
+--   DELETE FROM webauthn_challenges WHERE token_hash = $1 RETURNING ...
+--
+-- A SELECT followed by a DELETE is not the same thing and must not be
+-- substituted. Two connections can interleave between the two statements,
+-- both read the row, and both finish the same ceremony -- which is a
+-- captured assertion accepted twice. The signature counter does not catch
+-- it: synced passkeys report a counter of zero forever.
+--
+-- token_hash is UNIQUE because it is the only thing a ceremony is found by.
+-- user_id is set for a registration and NULL for a discoverable login,
+-- which names no account by design; authit never queries by it, and it is
+-- here so in-flight ceremonies cascade away with the account.
+--
+-- data is bytea, not text. It is the serialised ceremony state and must
+-- round-trip byte for byte.
+CREATE TABLE webauthn_challenges (
+    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    token_hash text        NOT NULL UNIQUE,
+    user_id    uuid        REFERENCES users(id) ON DELETE CASCADE,
+    data       bytea       NOT NULL,
+    expires_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+-- Expired rows are refused by authit but nothing removes them. As with
+-- password_reset_tokens and the other short-lived tables, sweeping is
+-- yours:  DELETE FROM webauthn_challenges WHERE expires_at < now();
+CREATE INDEX webauthn_challenges_expires_at_idx ON webauthn_challenges (expires_at);
+
 -- store.EmailLoginStore / store.EmailLoginToken -- magic links and sign-in
 -- codes (emaillogin package). Absent from the user plane above because a
 -- password-only deployment needs none of it.

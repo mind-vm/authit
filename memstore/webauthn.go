@@ -114,3 +114,45 @@ func (s *WebAuthnCredentialStore) DeleteWebAuthnCredential(_ context.Context, id
 	}
 	return nil
 }
+
+// WebAuthnChallengeStore is an in-memory store.WebAuthnChallengeStore.
+type WebAuthnChallengeStore struct {
+	mu          sync.Mutex
+	byTokenHash map[string]*store.WebAuthnChallenge
+}
+
+func NewWebAuthnChallengeStore() *WebAuthnChallengeStore {
+	return &WebAuthnChallengeStore{byTokenHash: map[string]*store.WebAuthnChallenge{}}
+}
+
+func (s *WebAuthnChallengeStore) CreateWebAuthnChallenge(_ context.Context, c *store.WebAuthnChallenge) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byTokenHash[c.TokenHash]; ok {
+		// The port requires the hash to be unique; a real schema gets this
+		// from a UNIQUE index, and two live rows under one handle would
+		// make "which ceremony is this" a coin flip.
+		return store.ErrConflict
+	}
+	cp := *c
+	cp.Data = slices.Clone(c.Data)
+	s.byTokenHash[c.TokenHash] = &cp
+	return nil
+}
+
+// ConsumeWebAuthnChallenge deletes and returns under one lock, which is
+// what makes it atomic here. A Get method followed by a Delete method would
+// not be: two callers could both read before either deleted, and both would
+// then be finishing the same ceremony.
+func (s *WebAuthnChallengeStore) ConsumeWebAuthnChallenge(_ context.Context, tokenHash string) (*store.WebAuthnChallenge, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.byTokenHash[tokenHash]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	delete(s.byTokenHash, tokenHash)
+	cp := *c
+	cp.Data = slices.Clone(c.Data)
+	return &cp, nil
+}

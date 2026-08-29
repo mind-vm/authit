@@ -310,6 +310,7 @@ func newPasskeyServerWithService(t *testing.T) (http.Handler, *passkey.Service) 
 	t.Helper()
 	svc, err := passkey.NewService(passkey.Stores{
 		Users: memstore.NewUserStore(), Credentials: memstore.NewWebAuthnCredentialStore(),
+		Challenges: memstore.NewWebAuthnChallengeStore(),
 	}, passkey.Config{
 		RPDisplayName: "Example", RPID: "example.com",
 		RPOrigins: []string{"https://example.com"},
@@ -379,6 +380,7 @@ func TestPasskeyFinishWithoutACeremonyIsRefused(t *testing.T) {
 func TestPasskeyRequiresAnIssuer(t *testing.T) {
 	svc, err := passkey.NewService(passkey.Stores{
 		Users: memstore.NewUserStore(), Credentials: memstore.NewWebAuthnCredentialStore(),
+		Challenges: memstore.NewWebAuthnChallengeStore(),
 	}, passkey.Config{RPID: "example.com", RPOrigins: []string{"https://example.com"}})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -478,6 +480,7 @@ func TestCeremonyCookieIsBoundToItsName(t *testing.T) {
 func TestCeremonyKeyIsRequired(t *testing.T) {
 	svc, err := passkey.NewService(passkey.Stores{
 		Users: memstore.NewUserStore(), Credentials: memstore.NewWebAuthnCredentialStore(),
+		Challenges: memstore.NewWebAuthnChallengeStore(),
 	}, passkey.Config{RPID: "example.com", RPOrigins: []string{"https://example.com"}})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -489,4 +492,68 @@ func TestCeremonyKeyIsRequired(t *testing.T) {
 		}
 	}()
 	authhandlers.NewPasskeyHandler(svc, testSigner(t), iss.issue())
+}
+
+// TestReplayedCeremonyIsRefusedOverHTTP is the end of the story the
+// security review started: not "the cookie cannot be forged" but "the same
+// request cannot be sent twice".
+//
+// Signing the ceremony cookie stopped a caller writing its own. It did not
+// stop one replaying a genuine cookie together with the assertion that
+// answered it -- both come from the same request, so a log line, an APM
+// trace or a debug proxy that captured one captured both. The signature
+// counter does not catch it either: go-webauthn exempts a counter of zero
+// from the clone check and every synced passkey reports zero forever.
+//
+// Redeeming the ceremony exactly once is what closes it, and this asserts
+// it where the attacker actually stands: at the HTTP boundary, replaying
+// bytes.
+func TestReplayedCeremonyIsRefusedOverHTTP(t *testing.T) {
+	h, svc := newPasskeyServerWithService(t)
+
+	// A real, signed ceremony cookie, exactly as the browser received it.
+	begin := do(t, h, "POST", "/passkeys/login/begin", "", nil)
+	if begin.Code != http.StatusOK {
+		t.Fatalf("begin: %d %s", begin.Code, begin.Body)
+	}
+	var cookie *http.Cookie
+	for _, c := range begin.Result().Cookies() {
+		if c.Name == "authit_passkey_login" {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("expected a ceremony cookie")
+	}
+
+	// Replaying it, with any body at all, must not find the ceremony a
+	// second time. The first request here stands in for the genuine
+	// sign-in that spent it.
+	spend := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/passkeys/login/finish", strings.NewReader("{}"))
+		r.Header.Set("Content-Type", "application/json")
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	// The body is not a valid assertion, so the ceremony fails to verify --
+	// but it was found, which is the part that matters here.
+	if w := spend(); w.Code == http.StatusBadRequest && strings.Contains(w.Body.String(), "ceremony_missing") {
+		t.Fatalf("the first attempt should have found the ceremony, got %s", w.Body)
+	}
+
+	// Now it is gone: the handle was redeemed by the attempt above, and a
+	// replay is indistinguishable from a handle that never existed.
+	w := spend()
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "ceremony_missing") {
+		t.Fatalf("a replayed ceremony got %d, want 400 ceremony_missing: %s", w.Code, w.Body)
+	}
+
+	// And the service agrees when asked directly, with no HTTP in the way.
+	if _, err := svc.FinishDiscoverableLogin(context.Background(),
+		passkey.Session("whatever"), httptest.NewRequest("POST", "/", strings.NewReader("{}"))); err == nil {
+		t.Fatal("an unknown handle must not verify")
+	}
 }

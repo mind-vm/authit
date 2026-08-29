@@ -22,19 +22,24 @@ import (
 // re-encode.
 type Options []byte
 
-// Session is the ceremony state that must survive the round trip to the
-// browser: the challenge, and which credentials were offered.
+// Session is the handle to an in-flight ceremony: 32 random bytes, and
+// nothing else.
 //
-// The host stores it — a short-lived HttpOnly cookie or a server-side
-// session — and gives it back to the matching Finish call. authit does not
-// keep it, for the same reason it does not keep OAuth state: it belongs to
-// one browser for one minute, and holding it would mean another store port
-// and a cleanup problem.
+// The host stores it — a short-lived HttpOnly cookie is the usual place —
+// and gives it back to the matching Finish call, which redeems it. The
+// ceremony state itself lives in store.WebAuthnChallengeStore and never
+// leaves the server.
 //
-// It is not a secret in the sense a token is, but it must not be
-// attacker-controlled: the challenge inside is what the signature is
-// checked against, so a caller who can substitute it can replay an old
-// assertion. Store it somewhere the user cannot edit.
+// It did not always. This carried the marshalled ceremony state until a
+// security review found what that costs: the challenge is what the
+// signature is verified against, so a caller able to edit it could present
+// an assertion captured earlier and have it checked against expectations of
+// its own choosing. Signing the cookie stops the editing; only redeeming
+// the handle exactly once stops the replay, and only the server can do
+// that.
+//
+// Treat it as a credential. It is single-use and short-lived, but until it
+// is redeemed it is the ceremony: whoever holds it can finish it.
 type Session []byte
 
 // Result is a completed authentication.
@@ -131,7 +136,7 @@ func (s *Service) BeginRegistration(ctx context.Context, userID string) (Options
 	if err != nil {
 		return nil, nil, err
 	}
-	return marshalCeremony(creation, session)
+	return s.issueCeremony(ctx, creation, session, ceremonyRegistration, &userID)
 }
 
 // CredentialDescriptors lists the user's existing credentials for exclusion.
@@ -150,7 +155,7 @@ func (s *Service) FinishRegistration(ctx context.Context, userID, name string, s
 	if err != nil {
 		return store.WebAuthnCredential{}, err
 	}
-	session, err := decodeSession(sess)
+	session, err := s.consumeCeremony(ctx, sess, ceremonyRegistration)
 	if err != nil {
 		return store.WebAuthnCredential{}, err
 	}
@@ -202,7 +207,7 @@ func (s *Service) BeginLogin(ctx context.Context, userID string) (Options, Sessi
 	if err != nil {
 		return nil, nil, err
 	}
-	return marshalCeremony(assertion, session)
+	return s.issueCeremony(ctx, assertion, session, ceremonyLogin, &userID)
 }
 
 // FinishLogin verifies an assertion for a known user.
@@ -211,7 +216,7 @@ func (s *Service) FinishLogin(ctx context.Context, userID string, sess Session, 
 	if err != nil {
 		return Result{}, err
 	}
-	session, err := decodeSession(sess)
+	session, err := s.consumeCeremony(ctx, sess, ceremonyLogin)
 	if err != nil {
 		return Result{}, err
 	}
@@ -233,18 +238,20 @@ func (s *Service) FinishLogin(ctx context.Context, userID string, sess Session, 
 // This is the flow that makes a passkey feel like nothing at all — no email
 // typed, no password. Note that it names no user, so it also cannot leak
 // whether a given account exists.
-func (s *Service) BeginDiscoverableLogin(_ context.Context) (Options, Session, error) {
+func (s *Service) BeginDiscoverableLogin(ctx context.Context) (Options, Session, error) {
 	assertion, session, err := s.web.BeginDiscoverableLogin(wan.WithUserVerification(s.cfg.UserVerification))
 	if err != nil {
 		return nil, nil, err
 	}
-	return marshalCeremony(assertion, session)
+	// No user id: a discoverable ceremony names no account, which is what
+	// keeps it from answering whether one exists.
+	return s.issueCeremony(ctx, assertion, session, ceremonyLogin, nil)
 }
 
 // FinishDiscoverableLogin verifies a usernameless assertion and resolves it
 // to the account that owns the credential.
 func (s *Service) FinishDiscoverableLogin(ctx context.Context, sess Session, r *http.Request) (Result, error) {
-	session, err := decodeSession(sess)
+	session, err := s.consumeCeremony(ctx, sess, ceremonyLogin)
 	if err != nil {
 		return Result{}, err
 	}
@@ -368,53 +375,105 @@ func applyCredential(rec *store.WebAuthnCredential, cred *wan.Credential) error 
 	return nil
 }
 
-func marshalCeremony(options any, session *wan.SessionData) (Options, Session, error) {
+// ceremonyKind says which ceremony issued a challenge, so one cannot be
+// finished as the other.
+//
+// A registration handle presented to FinishLogin, or the reverse, is
+// refused. authhandlers already separates the two by cookie name, with the
+// name bound into the cookie's MAC -- but a host calling this package
+// directly has no cookie and gets nothing from that, and the property is
+// worth holding at the layer that actually knows which ceremony it is.
+// better-auth shipped the same fix (#9993) after the same gap.
+type ceremonyKind string
+
+const (
+	ceremonyRegistration ceremonyKind = "registration"
+	ceremonyLogin        ceremonyKind = "login"
+)
+
+// storedCeremony is what a challenge row's Data holds. It is private, and
+// the store treats it as opaque bytes.
+type storedCeremony struct {
+	Kind    ceremonyKind    `json:"kind"`
+	Session wan.SessionData `json:"session"`
+}
+
+// issueCeremony stores the ceremony state and returns the handle to it.
+//
+// The Session handed back is 32 random bytes and nothing else: the state
+// itself never leaves the server. What the host stores is a bearer handle
+// to a row -- short-lived, single-use, and useless once redeemed.
+func (s *Service) issueCeremony(ctx context.Context, options any, session *wan.SessionData, kind ceremonyKind, userID *string) (Options, Session, error) {
 	opts, err := json.Marshal(options)
 	if err != nil {
 		return nil, nil, err
 	}
-	sess, err := json.Marshal(session)
+	data, err := json.Marshal(storedCeremony{Kind: kind, Session: *session})
 	if err != nil {
 		return nil, nil, err
 	}
-	return opts, sess, nil
+	raw, hash, err := authitcrypto.GenerateOpaqueToken()
+	if err != nil {
+		return nil, nil, err
+	}
+	id, err := authitcrypto.NewID()
+	if err != nil {
+		return nil, nil, err
+	}
+	// Expiry is the library's, not a second one invented here: session
+	// carries what BeginLogin computed from Config.Timeout, and the row
+	// should not outlive the ceremony it holds.
+	expires := session.Expires
+	if expires.IsZero() {
+		expires = time.Now().Add(s.cfg.Timeout)
+	}
+	rec := &store.WebAuthnChallenge{
+		ID: id, TokenHash: hash, UserID: userID, Data: data,
+		ExpiresAt: expires, CreatedAt: time.Now(),
+	}
+	if err := s.stores.Challenges.CreateWebAuthnChallenge(ctx, rec); err != nil {
+		return nil, nil, err
+	}
+	return opts, Session(raw), nil
 }
 
-// decodeSession parses a Session and strips the fields that must never
-// come from it.
+// consumeCeremony redeems a handle exactly once and returns the state it
+// named.
 //
-// wan.SessionData carries per-ceremony overrides for the origin allowlist
-// and the relying party id, and the library prefers them over its own
-// configuration at verification time -- GetOrigins returns []string{Origin}
-// whenever Origin is set, and validateLogin resolves both through the
-// session rather than the Config. authit never sets either at Begin, so a
-// session arriving with them populated did not come from here.
-//
-// That matters because Config.RPOrigins is documented as the thing that
-// stops a page on another site from driving your authenticator, and a
-// caller able to substitute the session could otherwise supply its own
-// one-entry allowlist and be checked against that instead. The Session
-// doc says it must not be attacker-controlled and it means it -- but a
-// guarantee that survives only correct storage is one this package can
-// enforce itself, for one line, so it does.
-//
-// Expires is required for the same reason: the library skips the expiry
-// check entirely when it is zero, so a session without one never times
-// out. Both Begin calls set it, because Timeouts.Enforce is on.
-func decodeSession(sess Session) (wan.SessionData, error) {
-	var out wan.SessionData
+// Every failure is ErrSession: a handle that never existed, one already
+// spent, one that expired, and one from the other ceremony are all the same
+// answer, because distinguishing them tells a caller which of those it is
+// holding.
+func (s *Service) consumeCeremony(ctx context.Context, sess Session, kind ceremonyKind) (wan.SessionData, error) {
 	if len(sess) == 0 {
-		return out, ErrSession
-	}
-	if err := json.Unmarshal(sess, &out); err != nil {
-		return out, ErrSession
-	}
-	if out.Expires.IsZero() {
 		return wan.SessionData{}, ErrSession
 	}
-	out.Origin = ""
-	out.RelyingPartyID = ""
-	return out, nil
+	rec, err := s.stores.Challenges.ConsumeWebAuthnChallenge(ctx, authitcrypto.HashToken(string(sess)))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return wan.SessionData{}, ErrSession
+		}
+		return wan.SessionData{}, err
+	}
+	if time.Now().After(rec.ExpiresAt) {
+		return wan.SessionData{}, ErrSession
+	}
+	var held storedCeremony
+	if err := json.Unmarshal(rec.Data, &held); err != nil {
+		return wan.SessionData{}, ErrSession
+	}
+	if held.Kind != kind {
+		return wan.SessionData{}, ErrSession
+	}
+	// Origin and RelyingPartyID are per-ceremony overrides the library
+	// prefers over Config at verification time, and authit never sets
+	// either. They cannot arrive from a caller now that the row is the
+	// only source, but clearing them keeps Config.RPOrigins the single
+	// answer to "which origins may drive this" regardless of what is in
+	// the row.
+	held.Session.Origin = ""
+	held.Session.RelyingPartyID = ""
+	return held.Session, nil
 }
 
 // wrapCeremony collapses the library's verification failures into

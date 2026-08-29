@@ -72,3 +72,77 @@ type WebAuthnCredentialStore interface {
 	UpdateWebAuthnCredential(ctx context.Context, c *WebAuthnCredential) error
 	DeleteWebAuthnCredential(ctx context.Context, id string) error
 }
+
+// WebAuthnChallenge is one in-flight WebAuthn ceremony.
+//
+// A ceremony spans two requests -- the browser is handed options, and comes
+// back with a signature over the challenge inside them -- so the challenge
+// has to survive in between. It survives here, and not in the caller's
+// hands, because it is what the signature is checked against: a caller able
+// to substitute it can present an assertion captured earlier and have it
+// verified against its own expectations.
+//
+// # Data is the record
+//
+// Data is the ceremony state, opaque to the store: whatever the passkey
+// package serialises, which must round-trip byte for byte. Store it as
+// bytes, never as text -- it is not UTF-8, and a text column will mangle
+// it. Nothing in the store may interpret it.
+type WebAuthnChallenge struct {
+	ID string
+	// TokenHash is the hash of the handle held by the browser. The handle
+	// itself is never stored, for the same reason a refresh token is not:
+	// a leaked table should not yield live credentials.
+	//
+	// It must be UNIQUE. It is the only thing a ceremony is found by.
+	TokenHash string
+	// UserID is the account a *registration* ceremony belongs to, and nil
+	// for a discoverable login, which names no user by design.
+	//
+	// authit never looks a challenge up by it, and never reads it back.
+	// It is denormalised out of Data so a host can put a foreign key here
+	// and have in-flight ceremonies cascade away with the account -- the
+	// same reason WebAuthnCredential carries fields it does not strictly
+	// need.
+	UserID    *string
+	Data      []byte
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
+// WebAuthnChallengeStore persists in-flight WebAuthn ceremonies.
+//
+// Two methods, and the second is the reason the port exists. There is
+// deliberately no Get -- a caller that can read a challenge without
+// consuming it can replay one -- no Update, because a challenge is written
+// once, and no sweeper, because no other port here ships one (see
+// schema.sql for the DELETE, which is yours to schedule).
+type WebAuthnChallengeStore interface {
+	CreateWebAuthnChallenge(ctx context.Context, c *WebAuthnChallenge) error
+
+	// ConsumeWebAuthnChallenge atomically deletes the challenge and returns
+	// what it held, or ErrNotFound if no row matched.
+	//
+	// Atomic is the whole method. Two callers presenting the same handle
+	// concurrently must not both receive a row: exactly one deletes it and
+	// sees it, and every other gets ErrNotFound. That race is precisely
+	// what lets a captured assertion be replayed, and removing it is the
+	// only reason this port is not just a map.
+	//
+	// In SQL it is one statement:
+	//
+	//	DELETE FROM webauthn_challenges WHERE token_hash = $1 RETURNING ...
+	//
+	// What matters is that the DELETE decides, not the read. Reading the
+	// row first and returning it is fine -- the read may even be stale --
+	// so long as the caller returns it only when its own delete removed
+	// exactly one row, and reports ErrNotFound when it removed none. A
+	// read that decides, with the delete as an afterthought, is the broken
+	// version: two callers both read, both return, and the assertion is
+	// accepted twice.
+	//
+	// Expiry is not judged here. An expired row is returned like any other
+	// and refused by the passkey package; consuming it is still right,
+	// since a spent challenge should not linger either way.
+	ConsumeWebAuthnChallenge(ctx context.Context, tokenHash string) (*WebAuthnChallenge, error)
+}

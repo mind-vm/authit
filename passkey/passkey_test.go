@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/mind-vm/authit/memstore"
@@ -32,7 +33,10 @@ func newFixture(t *testing.T, cfg passkey.Config) fixture {
 	if cfg.RPDisplayName == "" {
 		cfg.RPDisplayName = "Example"
 	}
-	svc, err := passkey.NewService(passkey.Stores{Users: users, Credentials: creds}, cfg)
+	challenges := memstore.NewWebAuthnChallengeStore()
+	svc, err := passkey.NewService(passkey.Stores{
+		Users: users, Credentials: creds, Challenges: challenges,
+	}, cfg)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -338,7 +342,10 @@ func TestCredentialManagementIsScopedToTheOwner(t *testing.T) {
 // TestConfigIsValidatedAtStartup: an empty origin list allows every origin,
 // which removes the check that makes the ceremony safe.
 func TestConfigIsValidatedAtStartup(t *testing.T) {
-	stores := passkey.Stores{Users: memstore.NewUserStore(), Credentials: memstore.NewWebAuthnCredentialStore()}
+	stores := passkey.Stores{
+		Users: memstore.NewUserStore(), Credentials: memstore.NewWebAuthnCredentialStore(),
+		Challenges: memstore.NewWebAuthnChallengeStore(),
+	}
 	if _, err := passkey.NewService(stores, passkey.Config{RPOrigins: []string{testOrigin}}); err == nil {
 		t.Fatal("an empty RPID must be refused")
 	}
@@ -356,19 +363,60 @@ func TestLoginWithNoCredentials(t *testing.T) {
 	}
 }
 
-// TestSessionCannotSupplyItsOwnOrigin is the property TestWrongOriginIsRejected
-// only half covers.
+// tamperingChallenges wraps a real challenge store and edits rows on the
+// way out, standing in for a host store that is wrong, compromised, or
+// merely creative. The ceremony state is no longer reachable by a caller,
+// so this is the only way left to ask what the package does when the row it
+// gets back is not the row it wrote.
+type tamperingChallenges struct {
+	inner store.WebAuthnChallengeStore
+	edit  func(*store.WebAuthnChallenge)
+}
+
+func (c tamperingChallenges) CreateWebAuthnChallenge(ctx context.Context, ch *store.WebAuthnChallenge) error {
+	return c.inner.CreateWebAuthnChallenge(ctx, ch)
+}
+
+func (c tamperingChallenges) ConsumeWebAuthnChallenge(ctx context.Context, hash string) (*store.WebAuthnChallenge, error) {
+	ch, err := c.inner.ConsumeWebAuthnChallenge(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	c.edit(ch)
+	return ch, nil
+}
+
+// newTamperedFixture builds a fixture whose challenge rows are edited by
+// edit between being written and being read back.
+func newTamperedFixture(t *testing.T, edit func(*store.WebAuthnChallenge)) fixture {
+	t.Helper()
+	users := memstore.NewUserStore()
+	creds := memstore.NewWebAuthnCredentialStore()
+	svc, err := passkey.NewService(passkey.Stores{
+		Users: users, Credentials: creds,
+		Challenges: tamperingChallenges{inner: memstore.NewWebAuthnChallengeStore(), edit: edit},
+	}, passkey.Config{
+		RPDisplayName: "Example", RPID: testRPID, RPOrigins: []string{testOrigin},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	u := &store.User{ID: "3f0b1c2d-0000-4000-8000-000000000001", Email: "alice@example.com"}
+	if err := users.CreateUser(context.Background(), u); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	return fixture{svc: svc, users: users, creds: creds, user: *u}
+}
+
+// TestCeremonyHandleIsSingleUse is the property the challenge store exists
+// for, and the one the package did not have.
 //
-// wan.SessionData carries per-ceremony overrides for the origin allowlist
-// and the RP id, and the library prefers them over Config at verification
-// time. So a caller who can edit the session does not have to defeat the
-// origin check -- it substitutes its own one-entry allowlist and is checked
-// against that. TestWrongOriginIsRejected misses this because it hands back
-// the server's own session, where Origin is empty.
-//
-// Config.RPOrigins is documented as what stops a page on another site from
-// driving the authenticator, so this must hold for a tampered session too.
-func TestSessionCannotSupplyItsOwnOrigin(t *testing.T) {
+// A passkey assertion is a bearer credential until the challenge it answers
+// is spent. If nothing spends it, an assertion captured once -- from a
+// request log, an APM trace, a debug proxy -- is replayable, and the
+// signature counter does not save it: go-webauthn exempts a counter of zero
+// from the clone check, and every synced passkey reports zero forever.
+func TestCeremonyHandleIsSingleUse(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t, passkey.Config{})
 	auth := f.enroll(t, "Test Key")
@@ -378,34 +426,104 @@ func TestSessionCannotSupplyItsOwnOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginLogin: %v", err)
 	}
+	challenge := challengeFrom(t, opts)
 
-	// The attacker rewrites the session to allow their own origin, which
-	// is exactly what a forgeable ceremony cookie hands them.
-	var raw map[string]any
-	if err := json.Unmarshal(sess, &raw); err != nil {
-		t.Fatalf("unmarshal session: %v", err)
+	if _, err := f.svc.FinishLogin(ctx, f.user.ID, sess, auth.assert(t, challenge, testRPID, testOrigin, f.user.ID)); err != nil {
+		t.Fatalf("the first use must succeed: %v", err)
 	}
-	raw["origin"] = "https://evil.example"
-	raw["rpId"] = testRPID
-	tampered, err := json.Marshal(raw)
-	if err != nil {
-		t.Fatalf("marshal session: %v", err)
-	}
-
-	r := auth.assert(t, challengeFrom(t, opts), testRPID, "https://evil.example", f.user.ID)
-	if _, err := f.svc.FinishLogin(ctx, f.user.ID, tampered, r); !errors.Is(err, passkey.ErrCeremony) {
-		t.Fatalf("a session-supplied origin must not widen RPOrigins, got %v", err)
+	// The identical assertion, replayed. Nothing about the request differs
+	// -- same handle, same bytes, same signature -- which is exactly the
+	// attacker's position.
+	if _, err := f.svc.FinishLogin(ctx, f.user.ID, sess, auth.assert(t, challenge, testRPID, testOrigin, f.user.ID)); !errors.Is(err, passkey.ErrSession) {
+		t.Fatalf("a spent ceremony must not be redeemable again, got %v", err)
 	}
 }
 
-// TestSessionWithoutAnExpiryIsRejected. The library skips the expiry check
-// entirely when Expires is zero, so a session without one never times out
-// -- which turns a 60-second ceremony into an indefinite one for anyone who
-// can edit the session. Both Begin calls set it, so an absent expiry did
-// not come from here.
-func TestSessionWithoutAnExpiryIsRejected(t *testing.T) {
+// TestRegistrationHandleCannotFinishALogin. The two ceremonies are told
+// apart by which Finish is called, so nothing stops a caller from calling
+// the other one -- and a registration challenge answered as a login would
+// verify against a challenge the account owner never asked to authenticate
+// with. authhandlers separates them by cookie name, bound into the cookie's
+// MAC, but a host calling this package directly has no cookie.
+func TestRegistrationHandleCannotFinishALogin(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t, passkey.Config{})
+	f.enroll(t, "Test Key")
+
+	_, regSess, err := f.svc.BeginRegistration(ctx, f.user.ID)
+	if err != nil {
+		t.Fatalf("BeginRegistration: %v", err)
+	}
+	if _, err := f.svc.FinishDiscoverableLogin(ctx, regSess, postJSON(t, map[string]any{})); !errors.Is(err, passkey.ErrSession) {
+		t.Fatalf("a registration handle must not finish a login, got %v", err)
+	}
+
+	_, loginSess, err := f.svc.BeginDiscoverableLogin(ctx)
+	if err != nil {
+		t.Fatalf("BeginDiscoverableLogin: %v", err)
+	}
+	if _, err := f.svc.FinishRegistration(ctx, f.user.ID, "x", loginSess, postJSON(t, map[string]any{})); !errors.Is(err, passkey.ErrSession) {
+		t.Fatalf("a login handle must not finish a registration, got %v", err)
+	}
+}
+
+// TestUnknownHandleIsRefused: a handle that never existed and one already
+// spent are the same answer, so neither reports which it was.
+func TestUnknownHandleIsRefused(t *testing.T) {
+	f := newFixture(t, passkey.Config{})
+	for name, sess := range map[string]passkey.Session{
+		"empty":   {},
+		"garbage": passkey.Session("not-a-real-handle"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := f.svc.FinishDiscoverableLogin(context.Background(), sess, postJSON(t, map[string]any{}))
+			if !errors.Is(err, passkey.ErrSession) {
+				t.Fatalf("got %v, want ErrSession", err)
+			}
+		})
+	}
+}
+
+// TestExpiredCeremonyIsRefused. The store returns an expired row like any
+// other -- consuming it is still right, since a spent challenge should not
+// linger -- so refusing it is this package's job.
+func TestExpiredCeremonyIsRefused(t *testing.T) {
+	ctx := context.Background()
+	f := newTamperedFixture(t, func(c *store.WebAuthnChallenge) {
+		c.ExpiresAt = time.Now().Add(-time.Second)
+	})
+	_, sess, err := f.svc.BeginDiscoverableLogin(ctx)
+	if err != nil {
+		t.Fatalf("BeginDiscoverableLogin: %v", err)
+	}
+	if _, err := f.svc.FinishDiscoverableLogin(ctx, sess, postJSON(t, map[string]any{})); !errors.Is(err, passkey.ErrSession) {
+		t.Fatalf("an expired ceremony must be refused, got %v", err)
+	}
+}
+
+// TestStoredOriginCannotWidenTheAllowlist.
+//
+// wan.SessionData carries per-ceremony overrides for the origin allowlist
+// and RP id, and the library prefers them over Config at verification time.
+// authit never writes either, so a row carrying them is a row something
+// else edited -- and Config.RPOrigins is documented as the thing that stops
+// another site driving the authenticator, which should not become untrue
+// because a store handed back something unexpected.
+func TestStoredOriginCannotWidenTheAllowlist(t *testing.T) {
+	ctx := context.Background()
+	f := newTamperedFixture(t, func(c *store.WebAuthnChallenge) {
+		var held map[string]any
+		if err := json.Unmarshal(c.Data, &held); err != nil {
+			return
+		}
+		sess, _ := held["session"].(map[string]any)
+		if sess == nil {
+			return
+		}
+		sess["origin"] = "https://evil.example"
+		sess["rpId"] = testRPID
+		c.Data, _ = json.Marshal(held)
+	})
 	auth := f.enroll(t, "Test Key")
 	auth.signCount++
 
@@ -413,18 +531,19 @@ func TestSessionWithoutAnExpiryIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginLogin: %v", err)
 	}
-	var raw map[string]any
-	if err := json.Unmarshal(sess, &raw); err != nil {
-		t.Fatalf("unmarshal session: %v", err)
+	r := auth.assert(t, challengeFrom(t, opts), testRPID, "https://evil.example", f.user.ID)
+	if _, err := f.svc.FinishLogin(ctx, f.user.ID, sess, r); !errors.Is(err, passkey.ErrCeremony) {
+		t.Fatalf("a stored origin must not widen RPOrigins, got %v", err)
 	}
-	delete(raw, "expires")
-	tampered, err := json.Marshal(raw)
-	if err != nil {
-		t.Fatalf("marshal session: %v", err)
-	}
+}
 
-	r := auth.assert(t, challengeFrom(t, opts), testRPID, testOrigin, f.user.ID)
-	if _, err := f.svc.FinishLogin(ctx, f.user.ID, tampered, r); !errors.Is(err, passkey.ErrSession) {
-		t.Fatalf("a session with no expiry must be refused, got %v", err)
+// TestChallengeStoreIsRequired. Not optional the way Tx is: without it a
+// challenge is redeemable more than once, which is the whole vulnerability.
+func TestChallengeStoreIsRequired(t *testing.T) {
+	_, err := passkey.NewService(passkey.Stores{
+		Users: memstore.NewUserStore(), Credentials: memstore.NewWebAuthnCredentialStore(),
+	}, passkey.Config{RPID: testRPID, RPOrigins: []string{testOrigin}})
+	if err == nil {
+		t.Fatal("a Service with no challenge store must be refused at construction")
 	}
 }

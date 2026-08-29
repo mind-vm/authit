@@ -21,4 +21,5 @@ var (
 	_ store.AccountStore               = (*AccountStore)(nil)
 	_ store.WebAuthnCredentialStore    = (*WebAuthnCredentialStore)(nil)
 	_ store.EmailLoginStore            = (*EmailLoginStore)(nil)
+	_ store.WebAuthnChallengeStore     = (*WebAuthnChallengeStore)(nil)
 )

@@ -180,7 +180,7 @@ They are separate handlers rather than one tree because they don't belong in the
 
 Protected routes validate the caller's bearer token themselves against the `jwt.Verifier` you pass in — no host middleware or context key required. CORS, rate limiting, and request logging are still yours.
 
-The `oidc` and `passkey` groups keep in-flight ceremony state in a short-lived `HttpOnly` cookie, **authenticated with a key you supply** via `WithCeremonyKey` — both constructors panic without one. The cookie is not a place to park a value until later; it is what the ceremony verifies against, holding the OAuth state and PKCE verifier the callback is checked against, or the WebAuthn challenge the signature is checked against. Unsigned, a caller with `curl` writes its own and the ceremony then verifies against the attacker's expectations rather than yours, which `HttpOnly` does nothing about — the attacker never needs the browser to hold or send anything. Use at least 32 random bytes, stable across your instances and restarts.
+The `oidc` and `passkey` groups keep in-flight ceremony state in a short-lived `HttpOnly` cookie, **authenticated with a key you supply** via `WithCeremonyKey` — both constructors panic without one. The cookie is not a place to park a value until later; it is what the ceremony verifies against. For `oidc` it holds the state and PKCE verifier the callback is checked against; for `passkey` it holds a handle to the challenge, which lives server-side. Unsigned, a caller with `curl` writes its own, which `HttpOnly` does nothing about — the attacker never needs the browser to hold or send anything. Use at least 32 random bytes, stable across your instances and restarts.
 
 The `SameSite` setting differs between the two groups and the difference is load-bearing: the OAuth cookie is **Lax**, because the callback is a top-level navigation *from the provider* and a `Strict` cookie would not be sent with it, leaving the callback unable to find the state it must check. The WebAuthn cookies are **Strict**, because that ceremony is driven by XHR from your own page and nothing is lost.
 
@@ -359,14 +359,16 @@ Request always reports success whether or not the address is registered; `ErrSig
 `passkey` adds WebAuthn, both as a second factor behind a password and as a primary credential that replaces one.
 
 ```go
-svc, _ := passkey.NewService(passkey.Stores{Users: users, Credentials: creds}, passkey.Config{
+svc, _ := passkey.NewService(passkey.Stores{
+	Users: users, Credentials: creds, Challenges: challenges,
+}, passkey.Config{
 	RPDisplayName: "Example Inc",
 	RPID:          "example.com",
 	RPOrigins:     []string{"https://example.com"},
 })
 
 // Registration, for a user you have already authenticated:
-opts, session, _ := svc.BeginRegistration(ctx, userID)   // send opts; store session
+opts, session, _ := svc.BeginRegistration(ctx, userID)   // send opts; store session (a handle)
 cred, err := svc.FinishRegistration(ctx, userID, "MacBook Touch ID", session, r)
 
 // Usernameless login — no email typed, no password:
@@ -381,7 +383,13 @@ res, err := svc.FinishDiscoverableLogin(ctx, session, r)
 
 `RPID` is your registrable domain, and a credential is bound to it permanently — change it and every passkey your users hold stops working, with no migration. `RPOrigins` must be non-empty; an empty list would allow every origin, removing the check that stops another site from driving the ceremony.
 
-Ceremony state is handed back to you, not stored — same as OAuth state in `oidc`, for the same reasons. `Remove` refuses to take away the last thing an account can be reached with.
+**`Stores.Challenges` is required, and it is what makes an assertion unreplayable.** A ceremony spans two requests, so the challenge has to survive in between — and it is what the signature is checked against. `Session` is a 32-byte handle to a row in `store.WebAuthnChallengeStore`; `Finish` redeems it exactly once, so presenting the same assertion twice fails the second time.
+
+It used to be the state itself, handed to you to store. That is why this is required rather than optional: a challenge that can be redeemed twice is an assertion that can be replayed, and the signature counter is not a backstop, because a credential synced across devices cannot keep a coherent one — iCloud Keychain and Google Password Manager passkeys report zero forever. Consuming the challenge is the only thing standing between a captured request and a repeatable sign-in.
+
+The one obligation on your adapter: **consuming must be atomic.** Delete and return in one statement (`DELETE … RETURNING`), or make the delete's affected-row count decide who won. A read that decides, with the delete after it, lets two concurrent callers both finish the same ceremony — which is the replay this exists to stop. `storetest.RunWebAuthnChallengeStore` has a case for exactly this; run it against your real database, where it means something.
+
+`Remove` refuses to take away the last thing an account can be reached with.
 
 **Not verified:** attestation against the FIDO Metadata Service. That answers "is this authenticator model one I trust", which matters for enterprises enforcing a hardware policy and is irrelevant to almost everyone else. Registration records what the authenticator supplied and does not judge it.
 

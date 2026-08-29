@@ -42,6 +42,16 @@ import (
 type Stores struct {
 	Users       store.UserStore
 	Credentials store.WebAuthnCredentialStore
+	// Challenges holds in-flight ceremonies. Required.
+	//
+	// It is not optional the way Tx is, and the difference is deliberate.
+	// Leaving Tx nil costs atomicity a host may never have had; leaving
+	// this nil would cost single-use challenges, and a challenge that can
+	// be redeemed twice is a captured assertion that can be replayed --
+	// indefinitely, against any authenticator reporting a signature
+	// counter of zero, which is every synced passkey. There is no version
+	// of that worth offering as a convenience.
+	Challenges store.WebAuthnChallengeStore
 	// Tx is optional; see store.TxRunner.
 	Tx store.TxRunner
 }
@@ -118,6 +128,11 @@ type Service struct {
 func NewService(stores Stores, cfg Config) (*Service, error) {
 	if stores.Users == nil || stores.Credentials == nil {
 		return nil, errors.New("authit/passkey: Stores.Users and Stores.Credentials are required")
+	}
+	if stores.Challenges == nil {
+		return nil, errors.New("authit/passkey: Stores.Challenges is required; " +
+			"without it a ceremony challenge can be redeemed more than once, " +
+			"which makes a captured assertion replayable")
 	}
 	if cfg.RPID == "" {
 		return nil, ErrConfig

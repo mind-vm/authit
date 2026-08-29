@@ -13,6 +13,7 @@ import (
 var userPlaneTables = []string{
 	"users", "refresh_tokens", "password_reset_tokens", "email_verification_tokens",
 	"totp_settings", "pending_two_factor_sessions", "failed_login_attempts", "account_locks",
+	"webauthn_challenges",
 }
 
 // TestReferenceSchemaConformance runs the shared store conformance suite
@@ -87,6 +88,14 @@ func TestReferenceSchemaConformance(t *testing.T) {
 		Lockouts: func(t *testing.T) store.LockoutStore {
 			fresh(t)
 			return stores.Lockouts
+		},
+		// The one suite whose interesting case needs a real database:
+		// "exactly one consumer wins" is nearly free to satisfy behind a
+		// mutex and is a genuine question against Postgres, where two
+		// connections can interleave between a SELECT and a DELETE.
+		WebAuthnChallenges: func(t *testing.T) store.WebAuthnChallengeStore {
+			fresh(t)
+			return exampleWebAuthnChallenges(db)
 		},
 	})
 }
