@@ -92,7 +92,17 @@ type UserHandler struct {
 	ip       func(*http.Request) string
 }
 
-// Option configures NewUserHandler.
+// Option configures any handler constructor in this package.
+//
+// Not every option applies to every group: WithIPExtractor is read by the
+// user and superuser groups, WithInsecureCookies and WithCeremonyKey by the
+// oidc and passkey groups. An option a constructor does not read is
+// ignored, not rejected.
+//
+// WithCeremonyKey is the exception to "optional": NewOIDCHandler and
+// NewPasskeyHandler panic without it. It is spelled as an Option rather
+// than a parameter so the other two constructors are not made to carry an
+// argument they have no use for.
 type Option func(*options)
 
 type options struct {

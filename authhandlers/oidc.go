@@ -1,7 +1,6 @@
 package authhandlers
 
 import (
-	"errors"
 	"net/http"
 
 	authitjwt "github.com/mind-vm/authit/jwt"
@@ -81,7 +80,7 @@ func (h *OIDCHandler) start(w http.ResponseWriter, r *http.Request) {
 	provider := r.PathValue("provider")
 	auth, err := h.svc.Begin(r.Context(), provider, h.redirectURI(r, provider))
 	if err != nil {
-		writeOIDCError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	// SameSite=Lax, not Strict. The callback is a top-level navigation
@@ -125,7 +124,7 @@ func (h *OIDCHandler) callback(w http.ResponseWriter, r *http.Request) {
 		CodeVerifier:  saved.Verifier,
 	})
 	if err != nil {
-		writeOIDCError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	h.issue(w, r, res.User, res.CreatedUser)
@@ -149,43 +148,10 @@ func (h *OIDCHandler) listAccounts(w http.ResponseWriter, r *http.Request, claim
 
 func (h *OIDCHandler) unlink(w http.ResponseWriter, r *http.Request, claims authitjwt.Claims) {
 	if err := h.svc.Unlink(r.Context(), claims.Subject, r.PathValue("provider")); err != nil {
-		writeOIDCError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func writeOIDCError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, oidc.ErrUnknownProvider):
-		writeError(w, http.StatusNotFound, "unknown_provider", oidc.ErrUnknownProvider.Error())
-	case errors.Is(err, oidc.ErrStateMismatch):
-		// The callback is not the continuation of a flow this server
-		// started. 400, not 401: nothing failed to authenticate, the
-		// request is malformed or forged.
-		writeError(w, http.StatusBadRequest, "state_mismatch", oidc.ErrStateMismatch.Error())
-	case errors.Is(err, oidc.ErrAccountNotLinked):
-		// Not a failure. The host's move is to tell the user this address
-		// already has an account and have them sign in and link it.
-		writeError(w, http.StatusConflict, "account_not_linked", oidc.ErrAccountNotLinked.Error())
-	case errors.Is(err, oidc.ErrProviderEmailUnverified):
-		writeError(w, http.StatusConflict, "provider_email_unverified", oidc.ErrProviderEmailUnverified.Error())
-	case errors.Is(err, oidc.ErrSignUpDisabled):
-		writeError(w, http.StatusForbidden, "signup_disabled", oidc.ErrSignUpDisabled.Error())
-	case errors.Is(err, oidc.ErrAlreadyLinked):
-		writeError(w, http.StatusConflict, "already_linked", oidc.ErrAlreadyLinked.Error())
-	case errors.Is(err, oidc.ErrLastCredential):
-		writeError(w, http.StatusConflict, "last_credential", oidc.ErrLastCredential.Error())
-	case errors.Is(err, oidc.ErrNoEmail):
-		writeError(w, http.StatusBadRequest, "no_email", oidc.ErrNoEmail.Error())
-	case errors.Is(err, oidc.ErrProviderUnreachable):
-		// The provider's fault or the network's, not the caller's.
-		writeError(w, http.StatusBadGateway, "provider_unreachable", oidc.ErrProviderUnreachable.Error())
-	case errors.Is(err, oidc.ErrExchange), errors.Is(err, oidc.ErrIdentity):
-		writeError(w, http.StatusBadRequest, "exchange_failed", oidc.ErrExchange.Error())
-	default:
-		writeServiceError(w, err)
-	}
 }
 
 const timeFormat = "2006-01-02T15:04:05Z07:00"

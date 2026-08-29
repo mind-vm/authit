@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"github.com/mind-vm/authit/ratelimit"
 	"time"
 
 	"github.com/mind-vm/authit/audit"
@@ -232,7 +233,7 @@ func (s *Service) VerifyTwoFactorLogin(ctx context.Context, pendingToken, code, 
 	// an attacker who holds the password gets MaxFailedLoginAttempts
 	// guesses per FailedLoginWindow here -- and cannot mint a fresh pending
 	// session to escape it, because Authenticate consults the same counter.
-	if err := s.limit(ctx, "two-factor:ip:"+ipAddress, "two-factor:user:"+u.ID); err != nil {
+	if err := ratelimit.AllowEach(ctx, s.cfg.RateLimiter, "two-factor:ip:"+ipAddress, "two-factor:user:"+u.ID); err != nil {
 		s.auditRateLimited(ctx, audit.EventUserLoginFailed, u.ID, u.Email, userAgent, ipAddress)
 		return AuthResult{}, err
 	}

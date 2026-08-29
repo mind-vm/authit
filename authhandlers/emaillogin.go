@@ -1,7 +1,6 @@
 package authhandlers
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/mind-vm/authit/emaillogin"
@@ -65,7 +64,7 @@ func (h *EmailLoginHandler) requestLink(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := h.svc.RequestMagicLink(r.Context(), req.Email); err != nil {
-		writeEmailLoginError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -78,7 +77,7 @@ func (h *EmailLoginHandler) requestCode(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := h.svc.RequestSignInCode(r.Context(), req.Email); err != nil {
-		writeEmailLoginError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -92,7 +91,7 @@ func (h *EmailLoginHandler) redeemLink(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := h.svc.RedeemMagicLink(r.Context(), req.Token)
 	if err != nil {
-		writeEmailLoginError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	h.issue(w, r, res.User, res.CreatedUser)
@@ -106,28 +105,10 @@ func (h *EmailLoginHandler) redeemCode(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := h.svc.RedeemSignInCode(r.Context(), req.Email, req.Code)
 	if err != nil {
-		writeEmailLoginError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	h.issue(w, r, res.User, res.CreatedUser)
-}
-
-// writeEmailLoginError maps this plane's sentinels.
-//
-// Note that ErrInvalidToken is 401 with one code covering wrong, expired,
-// used and exhausted. The service deliberately does not distinguish them,
-// and re-introducing the distinction here would undo that: an attacker who
-// can tell "expired" from "wrong" learns whether the code they guessed was
-// ever real.
-func writeEmailLoginError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, emaillogin.ErrInvalidToken):
-		writeError(w, http.StatusUnauthorized, "invalid_token", emaillogin.ErrInvalidToken.Error())
-	case errors.Is(err, emaillogin.ErrSignUpDisabled):
-		writeError(w, http.StatusForbidden, "signup_disabled", emaillogin.ErrSignUpDisabled.Error())
-	default:
-		writeServiceError(w, err)
-	}
 }
 
 type emailOnlyRequest struct {

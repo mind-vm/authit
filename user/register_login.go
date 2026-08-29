@@ -3,7 +3,6 @@ package user
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/mind-vm/authit/audit"
@@ -79,7 +78,7 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 	// account-scoped and only bites after several failures; this bites
 	// first and is scoped to the source address too, which is what keeps
 	// an attacker from making the server run Argon2id thousands of times.
-	if err := s.limit(ctx, "login:ip:"+ipAddress, "login:email:"+email); err != nil {
+	if err := ratelimit.AllowEach(ctx, s.cfg.RateLimiter, "login:ip:"+ipAddress, "login:email:"+email); err != nil {
 		s.auditRateLimited(ctx, audit.EventUserLoginFailed, "", email, userAgent, ipAddress)
 		return AuthResult{}, err
 	}
@@ -174,34 +173,6 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 		ActorID: u.ID, Email: u.Email, UserAgent: userAgent, IPAddress: ipAddress,
 	})
 	return AuthResult{User: *u, Tokens: &tokens}, nil
-}
-
-// limit consults the configured rate limiter for each key in turn,
-// skipping any whose value ends in an empty component -- an absent IP
-// address must not collapse every caller into one shared bucket.
-//
-// Every key is consulted even though the first refusal returns, so budget
-// is charged consistently: an attacker cannot exhaust one dimension and
-// leave another untouched by racing.
-func (s *Service) limit(ctx context.Context, keys ...string) error {
-	var refusal error
-	for _, key := range keys {
-		if strings.HasSuffix(key, ":") {
-			continue
-		}
-		if err := s.cfg.RateLimiter.Allow(ctx, key); err != nil {
-			if !errors.Is(err, ratelimit.ErrRateLimited) {
-				// The limiter itself failed. Fail closed rather than
-				// silently removing the control, and report it as its own
-				// error so a host can distinguish it from a refusal.
-				return err
-			}
-			if refusal == nil {
-				refusal = err
-			}
-		}
-	}
-	return refusal
 }
 
 // auditRateLimited records a refusal. It is a denial, not a credential

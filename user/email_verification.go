@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"errors"
+	"github.com/mind-vm/authit/ratelimit"
 	"time"
 
 	"github.com/mind-vm/authit/audit"
@@ -14,7 +15,7 @@ import (
 // emails it.
 func (s *Service) RequestEmailVerification(ctx context.Context, userID string) error {
 	// Authenticated, but still a "send this address an email" button.
-	if err := s.limit(ctx, "email-verification:user:"+userID); err != nil {
+	if err := ratelimit.AllowEach(ctx, s.cfg.RateLimiter, "email-verification:user:"+userID); err != nil {
 		return err
 	}
 	u, err := s.stores.Users.GetUserByID(ctx, userID)
@@ -30,7 +31,7 @@ func (s *Service) RequestEmailVerification(ctx context.Context, userID string) e
 // already verified, to avoid leaking account existence.
 func (s *Service) RequestEmailVerificationByEmail(ctx context.Context, email string) error {
 	email = store.NormalizeEmail(email)
-	if err := s.limit(ctx, "email-verification:email:"+email); err != nil {
+	if err := ratelimit.AllowEach(ctx, s.cfg.RateLimiter, "email-verification:email:"+email); err != nil {
 		return err
 	}
 	u, err := s.stores.Users.GetUserByEmail(ctx, email)

@@ -1,7 +1,6 @@
 package authhandlers
 
 import (
-	"errors"
 	"net/http"
 
 	authitjwt "github.com/mind-vm/authit/jwt"
@@ -106,7 +105,7 @@ func (h *PasskeyHandler) writeCeremony(w http.ResponseWriter, cookie string, opt
 func (h *PasskeyHandler) beginRegistration(w http.ResponseWriter, r *http.Request, claims authitjwt.Claims) {
 	opts, sess, err := h.svc.BeginRegistration(r.Context(), claims.Subject)
 	if err != nil {
-		writePasskeyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	h.writeCeremony(w, passkeyRegisterCookie, opts, sess)
@@ -125,7 +124,7 @@ func (h *PasskeyHandler) finishRegistration(w http.ResponseWriter, r *http.Reque
 	name := r.URL.Query().Get("name")
 	cred, err := h.svc.FinishRegistration(r.Context(), claims.Subject, name, sess, r)
 	if err != nil {
-		writePasskeyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, newPasskeyResponse(cred))
@@ -134,7 +133,7 @@ func (h *PasskeyHandler) finishRegistration(w http.ResponseWriter, r *http.Reque
 func (h *PasskeyHandler) beginLogin(w http.ResponseWriter, r *http.Request) {
 	opts, sess, err := h.svc.BeginDiscoverableLogin(r.Context())
 	if err != nil {
-		writePasskeyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	h.writeCeremony(w, passkeyLoginCookie, opts, sess)
@@ -149,7 +148,7 @@ func (h *PasskeyHandler) finishLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := h.svc.FinishDiscoverableLogin(r.Context(), sess, r)
 	if err != nil {
-		writePasskeyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	h.issue(w, r, res.User, false)
@@ -175,7 +174,7 @@ func (h *PasskeyHandler) rename(w http.ResponseWriter, r *http.Request, claims a
 		return
 	}
 	if err := h.svc.Rename(r.Context(), claims.Subject, r.PathValue("id"), req.Name); err != nil {
-		writePasskeyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -183,39 +182,10 @@ func (h *PasskeyHandler) rename(w http.ResponseWriter, r *http.Request, claims a
 
 func (h *PasskeyHandler) remove(w http.ResponseWriter, r *http.Request, claims authitjwt.Claims) {
 	if err := h.svc.Remove(r.Context(), claims.Subject, r.PathValue("id")); err != nil {
-		writePasskeyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func writePasskeyError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, passkey.ErrCeremony):
-		// One code for every verification failure -- bad signature, wrong
-		// origin, stale challenge. Which check failed belongs in a log,
-		// not in a response body.
-		writeError(w, http.StatusUnauthorized, "ceremony_failed", passkey.ErrCeremony.Error())
-	case errors.Is(err, passkey.ErrSession):
-		writeError(w, http.StatusBadRequest, "ceremony_missing", passkey.ErrSession.Error())
-	case errors.Is(err, passkey.ErrCloneWarning):
-		// 409, not 401. The assertion verified; the authenticator is the
-		// problem, and the user needs to be told something specific --
-		// that this credential is compromised and must be replaced.
-		writeError(w, http.StatusConflict, "clone_warning", passkey.ErrCloneWarning.Error())
-	case errors.Is(err, passkey.ErrUserVerificationRequired):
-		writeError(w, http.StatusUnauthorized, "user_verification_required", passkey.ErrUserVerificationRequired.Error())
-	case errors.Is(err, passkey.ErrAlreadyRegistered):
-		writeError(w, http.StatusConflict, "already_registered", passkey.ErrAlreadyRegistered.Error())
-	case errors.Is(err, passkey.ErrCredentialNotFound):
-		writeError(w, http.StatusNotFound, "credential_not_found", passkey.ErrCredentialNotFound.Error())
-	case errors.Is(err, passkey.ErrNoCredentials):
-		writeError(w, http.StatusConflict, "no_credentials", passkey.ErrNoCredentials.Error())
-	case errors.Is(err, passkey.ErrLastCredential):
-		writeError(w, http.StatusConflict, "last_credential", passkey.ErrLastCredential.Error())
-	default:
-		writeServiceError(w, err)
-	}
 }
 
 // passkeyResponse never exposes the credential blob or the raw credential

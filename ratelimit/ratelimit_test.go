@@ -164,3 +164,67 @@ func TestRetryAfterIgnoresOtherErrors(t *testing.T) {
 		t.Fatal("RetryAfter(nil) must be false")
 	}
 }
+
+// recordingLimiter records every key it was consulted with, and refuses the
+// ones named in refuse.
+type recordingLimiter struct {
+	seen   []string
+	refuse map[string]error
+}
+
+func (l *recordingLimiter) Allow(_ context.Context, key string) error {
+	l.seen = append(l.seen, key)
+	return l.refuse[key]
+}
+
+// TestAllowEachSkipsKeysWithAnAbsentComponent. Callers build keys by
+// joining a namespace to a value, and a value that is absent leaves the
+// separator dangling. Consulting "login:ip:" would put every caller whose
+// IP is unknown into one bucket, so the first few would spend the budget of
+// all the rest -- a denial of service against exactly the callers the
+// limiter knows least about.
+func TestAllowEachSkipsKeysWithAnAbsentComponent(t *testing.T) {
+	l := &recordingLimiter{}
+	if err := ratelimit.AllowEach(context.Background(), l, "login:email:a@example.com", "login:ip:"); err != nil {
+		t.Fatalf("AllowEach: %v", err)
+	}
+	if len(l.seen) != 1 || l.seen[0] != "login:email:a@example.com" {
+		t.Fatalf("consulted %v; a key with an empty trailing component must be skipped", l.seen)
+	}
+}
+
+// TestAllowEachChargesEveryKeyDespiteARefusal. Returning at the first
+// refusal would leave the later dimensions uncharged, so an attacker who
+// can make the first key refuse -- by exhausting a bucket they share with
+// nobody -- rides the rest for free.
+func TestAllowEachChargesEveryKeyDespiteARefusal(t *testing.T) {
+	l := &recordingLimiter{refuse: map[string]error{
+		"a": &ratelimit.Error{Key: "a", RetryAfter: time.Second},
+	}}
+	err := ratelimit.AllowEach(context.Background(), l, "a", "b", "c")
+	if !errors.Is(err, ratelimit.ErrRateLimited) {
+		t.Fatalf("got %v, want a refusal", err)
+	}
+	if len(l.seen) != 3 {
+		t.Fatalf("consulted %v; every key must be charged even after one refuses", l.seen)
+	}
+}
+
+// TestAllowEachPropagatesLimiterFailureImmediately. A Redis timeout is not
+// a refusal: the control is broken rather than the caller being too fast,
+// and the distinction is what lets a service fail closed on one and report
+// a 429 on the other.
+func TestAllowEachPropagatesLimiterFailureImmediately(t *testing.T) {
+	boom := errors.New("limiter is down")
+	l := &recordingLimiter{refuse: map[string]error{"a": boom}}
+	err := ratelimit.AllowEach(context.Background(), l, "a", "b")
+	if !errors.Is(err, boom) {
+		t.Fatalf("got %v, want the limiter's own error", err)
+	}
+	if errors.Is(err, ratelimit.ErrRateLimited) {
+		t.Fatal("a limiter failure must not be reported as a refusal")
+	}
+	if len(l.seen) != 1 {
+		t.Fatalf("consulted %v; a broken limiter must stop the walk, not be retried per key", l.seen)
+	}
+}

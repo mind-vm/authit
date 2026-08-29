@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -66,6 +67,45 @@ func RetryAfter(err error) (time.Duration, bool) {
 		return e.RetryAfter, true
 	}
 	return 0, false
+}
+
+// AllowEach consults l for each key in turn and returns the first refusal,
+// or nil if every key was allowed.
+//
+// Two rules, both of which were learned the hard way and neither of which
+// is obvious from Limiter:
+//
+// A key ending in ":" is skipped. Callers build keys by joining a namespace
+// to a value -- "login:ip:" + ipAddress -- and a value that is absent
+// leaves the separator dangling. Consulting that key would put every caller
+// with no IP address into one shared bucket, so the first few would spend
+// the budget of all the rest. Skipping is the safe reading: the dimension
+// is unknown for this caller, so it cannot be metered.
+//
+// Every key is consulted even after one refuses. Returning early would
+// leave the later dimensions uncharged, and an attacker who can make the
+// first key refuse -- by exhausting a bucket they share with nobody --
+// would then ride the others for free.
+//
+// A limiter's own failure (a Redis timeout, not a refusal) is returned
+// immediately and unwrapped, so a caller can tell "you are going too fast"
+// from "the control is broken" and fail closed on the second.
+func AllowEach(ctx context.Context, l Limiter, keys ...string) error {
+	var refusal error
+	for _, key := range keys {
+		if strings.HasSuffix(key, ":") {
+			continue
+		}
+		if err := l.Allow(ctx, key); err != nil {
+			if !errors.Is(err, ErrRateLimited) {
+				return err
+			}
+			if refusal == nil {
+				refusal = err
+			}
+		}
+	}
+	return refusal
 }
 
 // Noop allows everything. It is what a Config with a nil RateLimiter gets,

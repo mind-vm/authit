@@ -14,7 +14,7 @@ import (
 // SessionIssuer turns a resolved user into whatever the host hands back,
 // and writes the response itself.
 //
-// Every route group in this file resolves an identity without minting a
+// Every route group that takes one resolves an identity without minting a
 // credential — oidc, passkey and emaillogin all answer "who is this" and
 // stop there, the same way pat.Resolve and device.PollDeviceToken do. What
 // a signed-in user should receive is the host's decision, so these

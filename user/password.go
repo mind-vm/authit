@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"errors"
+	"github.com/mind-vm/authit/ratelimit"
 	"time"
 
 	"github.com/mind-vm/authit/audit"
@@ -51,7 +52,7 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 	// applies identically whether or not the address is registered -- this
 	// path deliberately reveals nothing either way. It bounds using
 	// password reset to flood somebody's inbox.
-	if err := s.limit(ctx, "password-reset:email:"+email); err != nil {
+	if err := ratelimit.AllowEach(ctx, s.cfg.RateLimiter, "password-reset:email:"+email); err != nil {
 		return err
 	}
 
