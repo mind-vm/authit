@@ -956,10 +956,38 @@ conformance run, not only by the in-memory fake.
 `schema.sql`. *Tests:* `user/opaque_session_test.go` (new),
 `authhandlers/planes_test.go`.
 
-**T2.5 — An optional `authz` package.** Statements, roles, `Can(member store.Member, action, resource string) bool`,
-with owner/admin/member predefined. Optional, in its own module, imported by nobody who does not want
-it — so the `team` package's documented stance survives intact while the common case stops being
-hand-written per consumer.
+**T2.5 — An optional `authz` package.** ✅ *Done*, with one deviation from this entry.
+
+*Not its own module.* The entry says "in its own module, imported by nobody who does not want it".
+The second half is true of any package — Go compiles what is imported — and the module split in this
+repo exists for a different reason: `sqlbstore` and `authhandlers` are separate modules because they
+drag `sqlb`/`pgx`, `oauth2` and `go-webauthn` into a host's module graph. `authz` depends on `store`
+and nothing else, so a separate `go.mod` would buy no isolation and cost a `go.work` entry, a
+release to tag, and version skew against the `store` types it is made of. In-tree package.
+
+*What it is.* `authz.Action`, `authz.Policy`, `DefaultPolicy()`, `Can(store.Member, Action)`. No
+resources, no wildcards, no runtime-stored roles, no inheritance — the things that let better-auth's
+dynamic access control build exactly the mess §2.5 warns about. Unknown roles and unknown actions are
+denied, so adding an `Action` here cannot silently widen a policy a host already wrote.
+
+*`Can` takes a Member, not a Role*, because an inactive member is not authorized for anything and
+that is the half of the check that gets left out: a deactivated colleague still has a membership row
+with a role on it. `CanRole` exists for the case with no Member to consult and says in its name that
+it is ignoring something.
+
+*The vocabulary moved rather than being copied.* `authhandlers.TeamAction` and its constants are now
+aliases for the `authz` ones, and `RoleAuthorizer` delegates to a `Policy` instead of re-implementing
+the switch. That was the point: the escalation S4.3 fixed existed because the only correct check
+lived behind an HTTP route group, so a host calling the `team` plane directly had to write its own —
+and the one authit shipped was wrong. Two implementations of one rule is how they disagree.
+
+*Does not reverse §2.5's argument.* Roles are still per-team strings, still cannot express a
+principal that spans teams, and nothing in authit imports this to work. "Authorization is yours" and
+"here is a correct owner/admin/member check" remain compatible claims.
+
+*Changed:* `authz/` (new), `authhandlers/team.go`. *Tests:* `authz/authz_test.go`, each confirmed to
+fail against the mutation it describes — including restoring the admin-may-manage-owners grant that
+was the original escalation.
 
 ### Tier 3 — developer experience
 

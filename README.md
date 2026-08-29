@@ -32,6 +32,7 @@ authit was designed by studying two existing implementations (a full-featured bu
 | `oidc` | Sign-in with an external identity provider (Google, GitHub, your SSO) |
 | `passkey` | WebAuthn — passkeys, Touch ID, security keys — as a second factor or a primary one |
 | `emaillogin` | Passwordless sign-in: magic links and short email codes |
+| `authz` | Optional owner/admin/member policy — the correct role check, written once |
 | `authithttp` | The only HTTP wiring authit ships: RFC-correct bearer-token extraction, validation, and 401-vs-500 classification |
 | `audit` | Opt-in security-event logging (`Logger`, `Event`, `NoopLogger`, `SlogLogger`) — every service's `Config` carries a nil-safe `AuditLogger` |
 
@@ -217,7 +218,9 @@ Note that importing this module now pulls in `golang.org/x/oauth2` and `go-webau
 
 **Some constructors demand an argument authit cannot supply, and panic without it.**
 
-`NewTeamHandler` requires a `TeamAuthorizer`. The `team` package deliberately doesn't check the caller's own role, so a route group that only asked "is this request authenticated" would let any user change any member's role in any team. `RoleAuthorizer` implements the conventional rules (active member may view; active owner or admin may manage members and invitations; **only an owner may grant the owner role or act on a member who holds it**), and you can replace it — if your model has a principal that spans teams, `team.Role` has no home for it by design, so write an authorizer that consults your schema first.
+`NewTeamHandler` requires a `TeamAuthorizer`. The `team` package deliberately doesn't check the caller's own role, so a route group that only asked "is this request authenticated" would let any user change any member's role in any team. `RoleAuthorizer` applies `authz.DefaultPolicy()` — active member may view; active owner or admin may manage members and invitations; **only an owner may grant the owner role or act on a member who holds it** — and you can replace it — if your model has a principal that spans teams, `team.Role` has no home for it by design, so write an authorizer that consults your schema first.
+
+The rules live in the `authz` package rather than here, so a host calling the `team` plane directly gets the same check instead of writing its own — set `RoleAuthorizer.Policy` to adjust it, e.g. `authz.DefaultPolicy().With("auditor", authz.ActionViewTeam)`. `authz.Policy.Can` takes a `store.Member` rather than a `store.Role` on purpose: an inactive member is authorized for nothing, and that is the half of the check people leave out.
 
 That last rule is separated out as its own `TeamActionManageOwners` because `owner` is the one role authit itself gives meaning to: the last-owner guards in `team` are the only invariant the library enforces about who controls a team. An admin who could grant it would grant it to themselves, and the founder would stop being the last owner and could then be removed. If you write your own authorizer, note that an unrecognised action must deny — a `default` case that returns an error is what keeps a new action from silently opening a route.
 

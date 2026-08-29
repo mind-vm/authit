@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/mind-vm/authit/authithttp"
+	"github.com/mind-vm/authit/authz"
 	"net/http"
 	"time"
 
@@ -18,32 +19,26 @@ var ErrForbidden = errors.New("authit/authhandlers: forbidden")
 
 // TeamAction names what a team route is about to do, so a TeamAuthorizer
 // can decide without knowing about HTTP.
-type TeamAction string
+//
+// It is an alias for authz.Action, not a second vocabulary. The rules that
+// go with it live in authz so that this package's authorizer and a host
+// calling the team plane directly cannot answer the same question
+// differently -- which they did, and the difference was an escalation.
+type TeamAction = authz.Action
 
 const (
 	// TeamActionView covers reading a team and its membership.
-	TeamActionView TeamAction = "view"
+	TeamActionView = authz.ActionViewTeam
 	// TeamActionManageMembers covers changing roles, activating and
 	// deactivating members, and removing them.
-	TeamActionManageMembers TeamAction = "manage_members"
+	TeamActionManageMembers = authz.ActionManageMembers
 	// TeamActionManageInvitations covers creating, listing and revoking
 	// invitations.
-	TeamActionManageInvitations TeamAction = "manage_invitations"
-	// TeamActionManageOwners covers granting the owner role, and
-	// mutating a member who already holds it.
-	//
-	// It is separate from TeamActionManageMembers because owner is the one
-	// role authit itself gives meaning to: the last-owner guards in the
-	// team package are the only invariant the library enforces about who
-	// controls a team. An authorizer that grants member management to
-	// admins is granting the power to add and remove colleagues; it is not
-	// necessarily granting the power to become the owner and evict the
-	// founder, and before this action existed it could not tell the two
-	// apart.
-	//
-	// A TeamAuthorizer written before this constant will fall to its
-	// default case and deny, which is the safe direction.
-	TeamActionManageOwners TeamAction = "manage_owners"
+	TeamActionManageInvitations = authz.ActionManageInvitations
+	// TeamActionManageOwners covers granting the owner role, and acting on
+	// a member who already holds it. See authz.ActionManageOwners for why
+	// it is separate.
+	TeamActionManageOwners = authz.ActionManageOwners
 )
 
 // TeamAuthorizer decides whether a caller may perform an action on a team.
@@ -68,6 +63,10 @@ type TeamAuthorizer interface {
 // your own that consults your own schema first and falls back to this.
 type RoleAuthorizer struct {
 	Teams *team.Service
+	// Policy decides which roles may do what. The zero value means
+	// authz.DefaultPolicy(); set it to add a role your application
+	// defines, e.g. authz.DefaultPolicy().With("auditor", authz.ActionViewTeam).
+	Policy authz.Policy
 }
 
 func (a RoleAuthorizer) Authorize(ctx context.Context, callerUserID, teamID string, action TeamAction) error {
@@ -77,31 +76,16 @@ func (a RoleAuthorizer) Authorize(ctx context.Context, callerUserID, teamID stri
 		// same way, so this cannot be used to discover which teams exist.
 		return ErrForbidden
 	}
-	if !m.IsActive {
+	policy := a.Policy
+	if policy.Empty() {
+		policy = authz.DefaultPolicy()
+	}
+	// Can checks IsActive as well as the role, which is the half of this
+	// that used to be a separate line here and is easy to leave out.
+	if !policy.Can(m, action) {
 		return ErrForbidden
 	}
-	switch action {
-	case TeamActionView:
-		return nil
-	case TeamActionManageMembers, TeamActionManageInvitations:
-		if m.Role == store.RoleOwner || m.Role == store.RoleAdmin {
-			return nil
-		}
-		return ErrForbidden
-	case TeamActionManageOwners:
-		// Owners only. An admin who could grant this role could grant it
-		// to themselves and then remove the owner -- the last-owner guard
-		// stops the removal only while one owner remains, and a
-		// self-promotion is what supplies the second.
-		if m.Role == store.RoleOwner {
-			return nil
-		}
-		return ErrForbidden
-	default:
-		// Default deny. A new TeamAction must be granted explicitly, so
-		// adding one cannot silently open a route.
-		return ErrForbidden
-	}
+	return nil
 }
 
 // TeamHandler serves authit's team plane.
