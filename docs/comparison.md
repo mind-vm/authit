@@ -902,7 +902,16 @@ worse than no test, and this one did not until it was made to.
 `crypto/usercode.go`, `storetest/user.go`, `audit/audit.go`, `schema.sql`.
 *Tests:* `emaillogin/emaillogin_test.go`, `crypto/numericcode_test.go`.
 
-**T2.4 — Optional server-side sessions.** `store.SessionStore` plus
+**T2.4 — Optional server-side sessions.** ◐ *Specified, not built* —
+[server-side-sessions.md](server-side-sessions.md), which corrects this entry in one load-bearing
+way: authit already has server-side sessions. `store.RefreshToken` is a session row and
+`ListSessions`/`RevokeSession` already read it as one. The gap is that the *access* credential
+consults nothing, so a revoked session stops being refreshable at once and stays usable until the
+JWT expires. That makes the item smaller than written (no new store port) and larger (every route
+group's constructor takes a `jwt.Verifier`, which cannot validate by lookup). Three decisions are
+open there. Original text follows.
+
+`store.SessionStore` plus
 `user.Config.SessionMode` (`SessionModeJWT` default, `SessionModeOpaque`). Opaque mode issues a
 random session token instead of a JWT and validates by lookup, buying immediate revocation for hosts
 that want it. This is the one place worth adopting better-auth's model outright — as an option, not a
