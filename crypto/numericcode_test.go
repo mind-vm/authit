@@ -1,7 +1,6 @@
 package crypto_test
 
 import (
-	"math"
 	"testing"
 
 	authitcrypto "github.com/mind-vm/authit/crypto"
@@ -18,17 +17,33 @@ import (
 //
 // The sample size is chosen so the test can actually see that. With a
 // million digits each is expected 100,000 times with a standard deviation
-// near 300, while the modulo bias shifts the common digits by about 2,000
-// -- some six standard deviations, so a threshold of 1% separates the two
-// implementations reliably without tripping on sampling noise. A smaller
-// sample would pass for both, which is worse than having no test.
+// near 300, while the modulo bias shifts each digit by some 2,000 -- six to
+// ten standard deviations. A smaller sample would pass for both, which is
+// worse than having no test.
+//
+// The comparison is chi-squared over all ten digits rather than a per-digit
+// tolerance, because a per-digit tolerance cannot be set well here. The
+// previous version failed when any digit drifted 1%, which is 3.3 standard
+// deviations -- and across ten digits that trips on honest randomness
+// roughly once in 115 runs. It did, which is how this was found. Widening
+// it to where noise is safe leaves almost no gap below the 2% the bias
+// produces.
+//
+// Chi-squared uses every digit at once and separates the two cases by a
+// factor of ten instead: an unbiased generator scores about 9, the biased
+// one several hundred. The threshold below is p ≈ 1e-6 for 9 degrees of
+// freedom, so a false failure is a once-in-a-million-runs event rather
+// than a weekly annoyance -- and a flaky security test is one people learn
+// to re-run.
 func TestNumericCodeIsUnbiased(t *testing.T) {
 	const (
-		codeLen   = 10
-		codes     = 100_000
-		total     = codeLen * codes
-		expected  = total / 10
-		tolerance = 0.01
+		codeLen  = 10
+		codes    = 100_000
+		total    = codeLen * codes
+		expected = float64(total) / 10
+		// Chi-squared critical value, 9 degrees of freedom, p = 1e-6.
+		// The biased implementation scores in the hundreds.
+		maxChiSquared = 45.0
 	)
 	counts := make([]int, 10)
 	for range codes {
@@ -46,11 +61,15 @@ func TestNumericCodeIsUnbiased(t *testing.T) {
 			counts[r-'0']++
 		}
 	}
-	for d, got := range counts {
-		if drift := math.Abs(float64(got)-expected) / expected; drift > tolerance {
-			t.Fatalf("digit %d appeared %d times, want within %.0f%% of %d (drift %.2f%%) -- modulo bias?",
-				d, got, tolerance*100, expected, drift*100)
-		}
+
+	var chiSquared float64
+	for _, got := range counts {
+		d := float64(got) - expected
+		chiSquared += d * d / expected
+	}
+	if chiSquared > maxChiSquared {
+		t.Fatalf("digit distribution %v scores chi-squared %.1f over %d digits, want under %.0f "+
+			"-- modulo bias? (expected %.0f of each)", counts, chiSquared, total, maxChiSquared, expected)
 	}
 }
 

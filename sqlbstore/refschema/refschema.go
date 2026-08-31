@@ -36,6 +36,7 @@ import (
 
 	"github.com/mind-vm/authit/sqlbstore"
 	"github.com/mind-vm/authit/store"
+	"github.com/mind-vm/authit/superuser"
 	"github.com/mind-vm/authit/user"
 	"github.com/mind-vm/sqlb"
 )
@@ -397,6 +398,115 @@ func UserStores(db sqlb.Executor) user.Stores {
 			LocksDB:          db,
 			NewLockRow:       func(userID string) AccountLock { return AccountLock{UserID: userID} },
 			LockUserIDColumn: "user_id",
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Operator plane -- superusers and their sessions.
+// ---------------------------------------------------------------------------
+
+// Superuser binds schema.sql's superusers table.
+//
+// Deliberately a separate table from users rather than a flag on it. An
+// operator account and an end-user account are different principals with
+// different lifecycles, and a boolean column is one UPDATE away from being
+// the whole authorization model. See the superuser package.
+type Superuser struct {
+	ID           string     `db:"id" sqlb:"type:uuid,pk,default"`
+	Email        string     `db:"email" sqlb:"type:text"`
+	PasswordHash string     `db:"password_hash" sqlb:"type:text"`
+	DisplayName  string     `db:"display_name" sqlb:"type:text,default"`
+	IsActive     bool       `db:"is_active" sqlb:"type:boolean,default"`
+	CreatedBy    *string    `db:"created_by" sqlb:"type:uuid"`
+	LastLoginAt  *time.Time `db:"last_login_at" sqlb:"type:timestamptz"`
+	CreatedAt    time.Time  `db:"created_at" sqlb:"type:timestamptz,default"`
+	UpdatedAt    time.Time  `db:"updated_at" sqlb:"type:timestamptz,default"`
+}
+
+func (Superuser) TableName() string { return "superusers" }
+
+// SuperuserRefreshToken binds schema.sql's superuser_refresh_tokens table.
+type SuperuserRefreshToken struct {
+	ID          string     `db:"id" sqlb:"type:uuid,pk,default"`
+	SuperuserID string     `db:"superuser_id" sqlb:"type:uuid"`
+	TokenHash   string     `db:"token_hash" sqlb:"type:text"`
+	ExpiresAt   time.Time  `db:"expires_at" sqlb:"type:timestamptz"`
+	RevokedAt   *time.Time `db:"revoked_at" sqlb:"type:timestamptz"`
+	UserAgent   string     `db:"user_agent" sqlb:"type:text,default"`
+	IPAddress   string     `db:"ip_address" sqlb:"type:text,default"`
+	CreatedAt   time.Time  `db:"created_at" sqlb:"type:timestamptz,default"`
+}
+
+func (SuperuserRefreshToken) TableName() string { return "superuser_refresh_tokens" }
+
+// SuperuserStores builds the ports superuser.NewService requires.
+//
+// Lockouts is left nil, which disables the operator lockout: it shares the
+// user plane's failed_login_attempts table, and whether an operator should
+// be locked out by the same counter as an end user is the host's call, not
+// this file's. Pass UserStores(db).Lockouts to share it.
+func SuperuserStores(db sqlb.Executor) superuser.Stores {
+	return superuser.Stores{
+		Superusers: sqlbstore.SuperuserAdapter[Superuser]{
+			Table: sqlbstore.Table[Superuser, store.Superuser]{
+				ToRow: func(s store.Superuser) Superuser {
+					return Superuser{
+						Email: s.Email, PasswordHash: s.PasswordHash,
+						DisplayName: s.DisplayName, IsActive: s.IsActive,
+						CreatedBy: s.CreatedBy, LastLoginAt: s.LastLoginAt,
+					}
+				},
+				FromRow: func(r Superuser) store.Superuser {
+					return store.Superuser{
+						ID: r.ID, Email: r.Email, PasswordHash: r.PasswordHash,
+						DisplayName: r.DisplayName, IsActive: r.IsActive,
+						CreatedBy: r.CreatedBy, LastLoginAt: r.LastLoginAt,
+						CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+					}
+				},
+				GetID:    func(s store.Superuser) string { return s.ID },
+				SetID:    func(r Superuser, id string) Superuser { r.ID = id; return r },
+				IDColumn: "id",
+				ToUpdateColumns: func(s store.Superuser) map[string]any {
+					return map[string]any{
+						"email": s.Email, "password_hash": s.PasswordHash,
+						"display_name": s.DisplayName, "is_active": s.IsActive,
+						"last_login_at": s.LastLoginAt, "updated_at": s.UpdatedAt,
+					}
+				},
+			},
+			DB:          db,
+			EmailColumn: "email",
+		},
+		RefreshTokens: sqlbstore.SuperuserRefreshTokenAdapter[SuperuserRefreshToken]{
+			Table: sqlbstore.Table[SuperuserRefreshToken, store.SuperuserRefreshToken]{
+				ToRow: func(t store.SuperuserRefreshToken) SuperuserRefreshToken {
+					return SuperuserRefreshToken{
+						SuperuserID: t.SuperuserID, TokenHash: t.TokenHash,
+						ExpiresAt: t.ExpiresAt, RevokedAt: t.RevokedAt,
+						UserAgent: t.UserAgent, IPAddress: t.IPAddress,
+					}
+				},
+				FromRow: func(r SuperuserRefreshToken) store.SuperuserRefreshToken {
+					return store.SuperuserRefreshToken{
+						ID: r.ID, SuperuserID: r.SuperuserID, TokenHash: r.TokenHash,
+						ExpiresAt: r.ExpiresAt, RevokedAt: r.RevokedAt,
+						UserAgent: r.UserAgent, IPAddress: r.IPAddress,
+						CreatedAt: r.CreatedAt,
+					}
+				},
+				GetID:    func(t store.SuperuserRefreshToken) string { return t.ID },
+				SetID:    func(r SuperuserRefreshToken, id string) SuperuserRefreshToken { r.ID = id; return r },
+				IDColumn: "id",
+				ToUpdateColumns: func(t store.SuperuserRefreshToken) map[string]any {
+					return map[string]any{"revoked_at": t.RevokedAt, "expires_at": t.ExpiresAt}
+				},
+			},
+			DB:                db,
+			SuperuserIDColumn: "superuser_id",
+			TokenHashColumn:   "token_hash",
+			RevokedAtColumn:   "revoked_at",
 		},
 	}
 }

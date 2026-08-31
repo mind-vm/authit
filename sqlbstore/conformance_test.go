@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/mind-vm/authit/sqlbstore/refschema"
 	"github.com/mind-vm/authit/store"
 	"github.com/mind-vm/authit/storetest"
 )
@@ -14,6 +15,10 @@ var userPlaneTables = []string{
 	"users", "refresh_tokens", "password_reset_tokens", "email_verification_tokens",
 	"totp_settings", "pending_two_factor_sessions", "failed_login_attempts", "account_locks",
 	"webauthn_challenges",
+	// The operator plane. Same schema, same run: refschema binds these
+	// too, and authitctl writes through that binding, so leaving them out
+	// would mean the only tables a CLI touches are the untested ones.
+	"superusers", "superuser_refresh_tokens",
 }
 
 // TestReferenceSchemaConformance runs the shared store conformance suite
@@ -59,8 +64,21 @@ func TestReferenceSchemaConformance(t *testing.T) {
 		}
 	}
 
+	// superuser_refresh_tokens carries a real foreign key too, and the
+	// suite creates tokens for operators it has not created.
+	ensureSuperuser := func(t *testing.T, superuserID string) {
+		t.Helper()
+		_, err := pool.Exec(context.Background(),
+			`INSERT INTO superusers (id, email, password_hash) VALUES ($1, $2, 'x')
+			 ON CONFLICT (id) DO NOTHING`,
+			superuserID, superuserID+"@example.com")
+		if err != nil {
+			t.Fatalf("creating fixture superuser %s: %v", superuserID, err)
+		}
+	}
+
 	storetest.RunAll(t, storetest.Stores{
-		Fixtures: storetest.Fixtures{EnsureUser: ensureUser},
+		Fixtures: storetest.Fixtures{EnsureUser: ensureUser, EnsureSuperuser: ensureSuperuser},
 		Users: func(t *testing.T) store.UserStore {
 			fresh(t)
 			return stores.Users
@@ -96,6 +114,14 @@ func TestReferenceSchemaConformance(t *testing.T) {
 		WebAuthnChallenges: func(t *testing.T) store.WebAuthnChallengeStore {
 			fresh(t)
 			return exampleWebAuthnChallenges(db)
+		},
+		Superusers: func(t *testing.T) store.SuperuserStore {
+			fresh(t)
+			return refschema.SuperuserStores(db).Superusers
+		},
+		SuperuserTokens: func(t *testing.T) store.SuperuserRefreshTokenStore {
+			fresh(t)
+			return refschema.SuperuserStores(db).RefreshTokens
 		},
 	})
 }

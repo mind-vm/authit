@@ -17,6 +17,7 @@ func rowTypes() []interface{ TableName() string } {
 		refschema.EmailVerificationToken{}, refschema.TOTPSettings{},
 		refschema.PendingTwoFactorSession{}, refschema.FailedLoginAttempt{},
 		refschema.AccountLock{}, refschema.WebAuthnChallenge{},
+		refschema.Superuser{}, refschema.SuperuserRefreshToken{},
 	}
 }
 

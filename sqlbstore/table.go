@@ -134,7 +134,7 @@ func (t Table[R, T]) ListBy(ctx context.Context, db sqlb.Executor, column string
 func (t Table[R, T]) GetWhere(ctx context.Context, db sqlb.Executor, preds ...sqlb.Pred) (T, error) {
 	row, err := sqlb.Query[R]().Where(preds...).One(ctx, db)
 	switch {
-	case errors.Is(err, sqlb.ErrNotFound):
+	case errors.Is(err, sqlb.ErrNotFound), isUnrepresentable(err):
 		var zero T
 		return zero, store.ErrNotFound
 	case err != nil:
@@ -142,6 +142,32 @@ func (t Table[R, T]) GetWhere(ctx context.Context, db sqlb.Executor, preds ...sq
 		return zero, fmt.Errorf("sqlbstore: getting: %w", err)
 	}
 	return t.FromRow(row), nil
+}
+
+// sqlStater is what a driver error implements when it carries a SQLSTATE.
+// Asserted structurally so this file needs no driver import: pgx's
+// *pgconn.PgError satisfies it, and so does anything else that means to.
+type sqlStater interface{ SQLState() string }
+
+// isUnrepresentable reports whether err means the value cannot be a member
+// of the column's type at all -- SQLSTATE 22P02, invalid_text_representation.
+//
+// It is treated as "no such row", which is what it means. Ask Postgres for
+// the user with id "nope" against a uuid column and it refuses to compare
+// rather than returning nothing, so without this a lookup by a malformed id
+// is a database error where an in-memory store returns ErrNotFound. The two
+// then disagree about the same call, which is what the conformance suite
+// exists to prevent, and it disagrees in the direction that matters: ids
+// arrive from URL paths, and authhandlers answers 500 to an unrecognised
+// error. Every by-id route -- a passkey, a member, a session -- would
+// answer "this server is broken" to a request that was merely wrong.
+//
+// Deliberately narrow. Only this one SQLSTATE, only on the read path: a
+// malformed value in a write is a bug worth surfacing, not a row to report
+// missing.
+func isUnrepresentable(err error) bool {
+	var s sqlStater
+	return errors.As(err, &s) && s.SQLState() == "22P02"
 }
 
 // ListWhere returns every row matching every pred (AND'd together).

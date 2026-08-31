@@ -1,8 +1,14 @@
 # Spec — T3.1, `authitctl`
 
-Status: **partly built.** D2(a) — the reference-schema package — is done and shipped as
-`sqlbstore/refschema`; see the note under §3. The CLI itself is still proposed, and D1 (which
-dialects) is still open.
+Status: **implemented**, both decisions taken as recommended — Postgres only (D1), and the reference
+schema promoted to a real package (D2a). Both open questions in §6 were answered by building it:
+`superuser create` earned its module, and `refschema` did land first as its own change.
+
+Two bugs surfaced from wiring the operator plane into the conformance run, neither of which this
+spec anticipated: a malformed id returned a driver error instead of `ErrNotFound`, which made every
+by-id HTTP route answer 500 to a bad path parameter; and `superuser_refresh_tokens`' foreign key had
+never been exercised because the run supplied no `EnsureSuperuser` fixture. Both are recorded in
+`comparison.md` under T3.1.
 
 ---
 

@@ -1000,22 +1000,45 @@ was the original escalation.
 
 ### Tier 3 — developer experience
 
-**T3.1 — `authitctl`.** ◐ *Half built* — [authitctl.md](authitctl.md). The reference-schema package
-it needs is done (`sqlbstore/refschema`), and was worth building on its own: the wiring hosts copy is
-now a package they can import, and the conformance run exercises that package rather than a private
-copy inside a `_test.go` file. The CLI itself is not built, and which dialects it should emit is
-still open. The spec narrows this
-entry on one axis and widens it on another. Narrower: there is no SQLite or MySQL anywhere in this
-repository, so those dialects would be hand-authored DDL that nothing can run — the bet this branch
-has already lost twice. Wider: `superuser create` needs a concrete Postgres binding authit does not
-ship, because every row type for the reference schema lives in `sqlbstore/example_test.go` and
-nothing can import it. Promoting those into a real package is the larger and more useful half, and
-would make the conformance run test the wiring hosts actually copy. Original text follows.
+**T3.1 — `authitctl`.** ✅ *Done*, narrower than this entry asked and wider in one place.
 
-`authitctl schema print --dialect postgres|sqlite|mysql` (emit the DDL, which
-today is a hand-maintained `schema.sql` for Postgres only) and `authitctl superuser create`. That is
-the genuinely useful half of better-auth's CLI. Skip migrations — authit does not own the schema and
-should not pretend to.
+*One dialect, not three.* `schema print` emits Postgres. There is no SQLite or MySQL store adapter
+and no conformance run for either, so DDL for them would be hand-written, unrunnable, and placed in
+front of people about to create production tables — the bet this branch has already lost twice. An
+unsupported dialect is refused by name and exits 2 rather than quietly emitting Postgres. The root
+module gained one file, `schema.go`, embedding `schema.sql` so it can be read by something other
+than a human with a checkout.
+
+*`superuser create` goes through `superuser.Service`,* so the password is hashed by the same
+`Config.PasswordHasher` the application will verify it with and validated by the same policy, rather
+than by an INSERT that agrees today. It reads the password from the terminal and refuses a pipe: a
+password in argv is in the process list and the shell history, which is the sharp edge the command
+exists to remove. It creates only the *first* operator — `Bootstrap` refuses once any exists, and a
+CLI has no authenticated creator to record for the rest.
+
+*Its own module,* so the `pgx` driver it needs stays out of the library's graph.
+
+**Two bugs it found on the way,** both from wiring the operator plane into the reference-schema
+conformance run for the first time:
+
+- **A malformed id was a 500, not a 404** — `sqlbstore/table.go`. Ask Postgres for the row with id
+  `"nope"` against a `uuid` column and it refuses to compare (SQLSTATE 22P02) rather than returning
+  nothing, so the adapter reported a database error where `memstore` reports `ErrNotFound`. Ids
+  arrive from URL paths and `authhandlers` answers 500 to an unrecognised error, so **every by-id
+  route** — a passkey, a member, a session — answered "this server is broken" to a request that was
+  merely wrong. Now mapped to `ErrNotFound`, narrowly: that one SQLSTATE, read path only.
+- **`superuser_refresh_tokens` had no fixture hook wired,** so its foreign key went unexercised.
+  `Fixtures.EnsureSuperuser` already existed; the reference-schema run had never supplied it.
+
+*A flaky test, found by hitting it.* `TestNumericCodeIsUnbiased` failed once during this work at
+1.04% drift against a 1% threshold. That threshold is 3.3 standard deviations, which across ten
+digits trips on honest randomness about once in 115 runs — and widening it leaves almost no gap
+below the 2% the modulo bias produces. Replaced with chi-squared over all ten digits at once, where
+an unbiased generator scores about 9, the biased one 337, and the threshold is 45. A flaky security
+test is one people learn to re-run.
+
+*Changed:* `authitctl/` (new module), `schema.go` (new), `sqlbstore/refschema/` (operator plane),
+`sqlbstore/table.go`, `sqlbstore/conformance_test.go`, `crypto/numericcode_test.go`.
 
 **T3.2 — OpenAPI document for `authhandlers`.** Hand-written YAML is fine; it is a fixed route set.
 
