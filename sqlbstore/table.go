@@ -45,12 +45,15 @@ type Table[R, T any] struct {
 	// GetID extracts T's primary key.
 	GetID func(T) string
 	// SetID returns a copy of row with its primary key column set to id.
-	// Create calls this with "" (so a defaulted column, e.g. a generated
-	// UUIDv7, is left to the database rather than whatever the row
-	// happened to hold), then inserts — sqlb's InsertRows only writes an
-	// explicit value for a database-defaulted column when the Go field is
-	// non-zero, so leaving ID at its zero value here is what makes the
-	// database generate one.
+	//
+	// Create calls this with GetID(v): the id the caller supplied, or ""
+	// when they supplied none. sqlb's InsertRows writes an explicit value
+	// for a database-defaulted column only when the Go field is non-zero,
+	// so "" leaves the id to the database's default and a real one is
+	// written as given.
+	//
+	// It used to be called with "" unconditionally, which broke every
+	// authit service that generates an id and then *uses* it — see Create.
 	SetID func(R, string) R
 	// IDColumn is the row's primary key column name — used by GetByID and
 	// as Update's WHERE clause.
@@ -73,8 +76,23 @@ type Table[R, T any] struct {
 
 // Create inserts v and returns what was actually persisted (DB defaults
 // included).
+//
+// An id the caller supplied is honoured; an empty one is left to the column
+// default. Both halves matter, and the first was missing.
+//
+// authit's service packages generate their own ids with crypto.NewID before
+// handing a record to a store, and some of them then use that id for a second
+// write. team.CreateTeam is the case that made this a bug rather than a
+// preference: it creates the team, then creates the owner member pointing at
+// the id it generated. While Create blanked the key unconditionally the
+// database assigned a different one, so the member insert failed against a
+// team that did not exist — a foreign key violation naming neither the
+// substitution nor the assumption, with an orphaned team row left behind.
+//
+// Deferring an unset id to the database is still the behaviour a caller that
+// supplies none gets, so nothing that worked stops working.
 func (t Table[R, T]) Create(ctx context.Context, db sqlb.Executor, v T) (T, error) {
-	row := t.SetID(t.ToRow(v), "")
+	row := t.SetID(t.ToRow(v), t.GetID(v))
 	rows, err := sqlb.InsertRows(&row).Exec(ctx, db)
 	if err != nil {
 		var zero T
