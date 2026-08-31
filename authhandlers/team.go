@@ -3,11 +3,11 @@ package authhandlers
 import (
 	"context"
 	"errors"
-	"github.com/mind-vm/authit/authithttp"
-	"github.com/mind-vm/authit/authz"
 	"net/http"
 	"time"
 
+	"github.com/mind-vm/authit/authithttp"
+	"github.com/mind-vm/authit/authz"
 	authitjwt "github.com/mind-vm/authit/jwt"
 	"github.com/mind-vm/authit/store"
 	"github.com/mind-vm/authit/team"
@@ -259,6 +259,28 @@ func (h *TeamHandler) listMemberships(w http.ResponseWriter, r *http.Request, cl
 	writeJSON(w, http.StatusOK, out)
 }
 
+// authorizeOwnerChange gates the operations that create or dispose of an
+// owner, on top of the ordinary member-management check the caller has
+// already passed.
+//
+// roles are the roles this operation touches: the one being granted, the
+// one the target already holds, or both. If any of them is RoleOwner the
+// caller additionally needs TeamActionManageOwners.
+//
+// It exists because getting this wrong once was an account takeover -- an
+// admin granting itself owner supplies the second owner the last-owner
+// guard counts, and the founder can then be removed. Four routes can reach
+// that, and four copies of a rule is three chances to fix it in only three
+// places.
+func (h *TeamHandler) authorizeOwnerChange(w http.ResponseWriter, r *http.Request, callerUserID, teamID string, roles ...store.Role) bool {
+	for _, role := range roles {
+		if role == store.RoleOwner {
+			return h.authorize(w, r, callerUserID, teamID, TeamActionManageOwners)
+		}
+	}
+	return true
+}
+
 func (h *TeamHandler) updateMemberRole(w http.ResponseWriter, r *http.Request, claims authitjwt.Claims) {
 	req, err := decodeJSON[updateMemberRoleRequest](r)
 	if err != nil {
@@ -272,12 +294,9 @@ func (h *TeamHandler) updateMemberRole(w http.ResponseWriter, r *http.Request, c
 	if !h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageMembers) {
 		return
 	}
-	// Granting owner, or touching someone who already is one, is a
-	// separate decision from ordinary member management. Both directions
-	// are checked: the grant is what manufactures a second owner, and the
-	// demotion is how the first one is disposed of afterwards.
-	if (store.Role(req.Role) == store.RoleOwner || m.Role == store.RoleOwner) &&
-		!h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageOwners) {
+	// Both directions: the grant is what manufactures a second owner, and
+	// the demotion is how the first one is disposed of afterwards.
+	if !h.authorizeOwnerChange(w, r, claims.Subject, m.TeamID, store.Role(req.Role), m.Role) {
 		return
 	}
 	if err := h.svc.UpdateMemberRole(r.Context(), m.ID, store.Role(req.Role)); err != nil {
@@ -300,7 +319,7 @@ func (h *TeamHandler) setMemberActive(w http.ResponseWriter, r *http.Request, cl
 	if !h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageMembers) {
 		return
 	}
-	if m.Role == store.RoleOwner && !h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageOwners) {
+	if !h.authorizeOwnerChange(w, r, claims.Subject, m.TeamID, m.Role) {
 		return
 	}
 	if err := h.svc.SetMemberActive(r.Context(), m.ID, req.IsActive); err != nil {
@@ -318,7 +337,7 @@ func (h *TeamHandler) removeMember(w http.ResponseWriter, r *http.Request, claim
 	if !h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageMembers) {
 		return
 	}
-	if m.Role == store.RoleOwner && !h.authorize(w, r, claims.Subject, m.TeamID, TeamActionManageOwners) {
+	if !h.authorizeOwnerChange(w, r, claims.Subject, m.TeamID, m.Role) {
 		return
 	}
 	if err := h.svc.RemoveMember(r.Context(), m.ID); err != nil {
@@ -341,8 +360,7 @@ func (h *TeamHandler) createInvitation(w http.ResponseWriter, r *http.Request, c
 	// An invitation carries a role, and AcceptInvitation copies it onto
 	// the new member verbatim. Gating only the role route would leave the
 	// same grant available to anyone with a second email address.
-	if store.Role(req.Role) == store.RoleOwner &&
-		!h.authorize(w, r, claims.Subject, teamID, TeamActionManageOwners) {
+	if !h.authorizeOwnerChange(w, r, claims.Subject, teamID, store.Role(req.Role)) {
 		return
 	}
 	// invitedByMemberID must be the caller's own membership in this team,

@@ -1118,8 +1118,10 @@ own doc, is the only reason a six-digit code is safe at all.
 `store.EmailLoginStore.UpdateEmailLoginToken` is replaced by two methods that each do one atomic
 thing: `MarkEmailLoginTokenUsed` (compare-and-set on `used_at IS NULL`, `ErrNotFound` if lost) and
 `IncrementEmailLoginTokenAttempts` (returns the count the store computed). Winning the first is now
-what authorises a redemption, so it happens before an account is resolved or created. The port got
-narrower, not wider.
+what authorises a redemption. On the sign-up path it happens before the account is created and
+inside the same transaction; on the existing-user path the account is resolved first and the mark
+follows, since a lookup that finds nothing must not spend the credential. Either way nothing is
+issued to a caller that lost the compare-and-set. The port got narrower, not wider.
 
 *The measurement that mattered.* The concurrency case for this was written as one round of 32
 racers, the shape that worked for the challenge store. Against a store that reads, unlocks and then
@@ -1131,6 +1133,22 @@ worse than none, since it reports a green tick for a magic link that signs two p
 That is the fourth verification step on this branch to be wrong on the first attempt, and the second
 where a mutated implementation failed to *compile* and the harness read the build error as a pass.
 The proof loop now builds before it believes a result.
+
+**S4.6 — Opaque session mode had no working logout.** ✅ Found by the second code review, in code
+the first one predated. `POST /logout` reads the refresh token from the request body; opaque mode has
+no refresh token, so a client following the documented contract sent nothing and was answered 204
+with its session still live. `revoke-others` reached the service with an empty token and answered
+500. `GET /me/sessions` marked nothing current.
+
+All three name the caller's *own* session, and in opaque mode that session is the bearer credential,
+so they read it from there; `/logout` sits behind the authenticator in that mode. `ErrWrongSessionMode`
+and `ErrCurrentSessionRequired` joined the error table as 400s rather than falling through to a 500
+that reports a caller's mistake as an outage.
+
+*Why the suite missed it.* T2.4's end-to-end test covered sign in, use, revoke by id, and use again
+— the property the mode exists for. It never called logout, so the one session operation whose
+credential comes from the body, in the mode where that credential does not exist, was the route it
+did not touch. A test written to demonstrate a feature covers the path that demonstrates it.
 
 **S4.4 — `memstore.DeleteMember` left its secondary indexes holding freed ids.** ✅ Not a
 vulnerability — a crash, found while reproducing S4.3. `DeleteMember` removed the id from `byID`

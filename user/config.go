@@ -38,7 +38,7 @@ const (
 	//   - There is no refresh token. The pair exists so that the common
 	//     path avoids a lookup; once every request performs one, a second
 	//     credential for avoiding lookups is ceremony. TokenPair.RefreshToken
-	//     is empty and Refresh returns ErrNotOpaqueSession.
+	//     is empty and Refresh returns ErrWrongSessionMode.
 	//   - Every protected request costs a round trip to the refresh-token
 	//     store, which is the session store in this mode.
 	//   - Authentication can now fail because a database is down, which is

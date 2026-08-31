@@ -140,7 +140,7 @@ if err != nil {
 
 Sessions expire after `RefreshTokenTTL`, extended on use once `SessionSlidingWindow` has passed (a quarter of the lifetime by default; negative disables extension). A threshold, not every request, because the latter is a write per request.
 
-Both modes use the same rows, so `ListSessions`, `RevokeSession` and `RevokeOtherSessions` work identically in each.
+Both modes use the same rows, so `ListSessions`, `RevokeSession` and `RevokeOtherSessions` behave the same in each. Over HTTP the three operations that name *your own* session differ in where they read it from: in JWT mode from the request (`refresh_token`, `current_refresh_token`), in opaque mode from the bearer credential, because that is the session. `POST /logout` is behind the authenticator in opaque mode for the same reason.
 
 ### Who is this request? (`authithttp.Authenticator`)
 
@@ -196,17 +196,19 @@ If you'd rather not hand-write the request/response plumbing, [`authhandlers`](a
 | `NewEmailLoginHandler` | magic links and sign-in codes |
 
 ```go
+auth := authithttp.VerifierAuth(signer) // or authhandlers.UserSessionAuth(userSvc)
+
 mux := http.NewServeMux()
-mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(userSvc, signer)))
-mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewTeamHandler(teamSvc, signer,
+mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(userSvc, auth)))
+mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewTeamHandler(teamSvc, auth,
 	authhandlers.RoleAuthorizer{Teams: teamSvc})))
-mux.Handle("/passkeys/", authhandlers.NewPasskeyHandler(passkeySvc, signer, issuer,
+mux.Handle("/passkeys/", authhandlers.NewPasskeyHandler(passkeySvc, auth, issuer,
 	authhandlers.WithCeremonyKey(ceremonyKey)))
 ```
 
 They are separate handlers rather than one tree because they don't belong in the same place: the superuser group is an operator surface most deployments should keep off the public internet, and the device group speaks OAuth wire format (form-encoded requests, RFC 6749 error bodies) rather than this package's own JSON conventions.
 
-Protected routes validate the caller's bearer token themselves against the `jwt.Verifier` you pass in — no host middleware or context key required. CORS, rate limiting, and request logging are still yours.
+Protected routes authenticate the caller themselves, through the `authithttp.Authenticator` you pass in — no host middleware or context key required. CORS, rate limiting, and request logging are still yours.
 
 The `oidc` and `passkey` groups keep in-flight ceremony state in a short-lived `HttpOnly` cookie, **authenticated with a key you supply** via `WithCeremonyKey` — both constructors panic without one. The cookie is not a place to park a value until later; it is what the ceremony verifies against. For `oidc` it holds the state and PKCE verifier the callback is checked against; for `passkey` it holds a handle to the challenge, which lives server-side. Unsigned, a caller with `curl` writes its own, which `HttpOnly` does nothing about — the attacker never needs the browser to hold or send anything. Use at least 32 random bytes, stable across your instances and restarts.
 
@@ -504,7 +506,7 @@ claims, err := authithttp.Validate(verifier, r)
 
 `NewRS256Signer` is available where a consumer expects RS256; prefer Ed25519 otherwise — smaller keys and signatures, and no parameters to get wrong. Both refuse RSA keys under 2048 bits.
 
-The interface is split so this is enforced by the type system rather than by convention: `jwt.Verifier` has `Verify`/`Validate` only, `jwt.Signer` embeds it and adds `Sign`/`Generate`. Take a `Verifier` in anything that only checks tokens — `authithttp.Validate` and `authhandlers.NewUserHandler` both do. A `Signer` satisfies `Verifier`, so this narrowing broke no callers.
+The interface is split so this is enforced by the type system rather than by convention: `jwt.Verifier` has `Verify`/`Validate` only, `jwt.Signer` embeds it and adds `Sign`/`Generate`. Take a `Verifier` in anything that only checks tokens — `authithttp.Validate` and `authithttp.VerifierAuth` both do. A `Signer` satisfies `Verifier`, so this narrowing broke no callers.
 
 **Key rotation** works because every asymmetric token carries a `kid` (the RFC 7638 thumbprint of the key, so both sides derive the same id without coordinating). Publish the new key alongside the old, wait for verifiers to pick up the set, switch the signer, then drop the old key once no unexpired token bears it:
 

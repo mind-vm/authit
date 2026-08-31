@@ -1,9 +1,9 @@
 package authhandlers
 
 import (
-	"github.com/mind-vm/authit/authithttp"
 	"net/http"
 
+	"github.com/mind-vm/authit/authithttp"
 	authitjwt "github.com/mind-vm/authit/jwt"
 	"github.com/mind-vm/authit/passkey"
 	"github.com/mind-vm/authit/store"
@@ -116,7 +116,7 @@ func (h *PasskeyHandler) finishRegistration(w http.ResponseWriter, r *http.Reque
 	defer h.clearCeremonyCookie(w, passkeyRegisterCookie, http.SameSiteStrictMode)
 	sess, ok := h.readCeremonyCookie(r, passkeyRegisterCookie)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "ceremony_missing", passkey.ErrSession.Error())
+		writeServiceError(w, passkey.ErrSession)
 		return
 	}
 	// The credential name is a query parameter because the body is the
@@ -144,7 +144,7 @@ func (h *PasskeyHandler) finishLogin(w http.ResponseWriter, r *http.Request) {
 	defer h.clearCeremonyCookie(w, passkeyLoginCookie, http.SameSiteStrictMode)
 	sess, ok := h.readCeremonyCookie(r, passkeyLoginCookie)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "ceremony_missing", passkey.ErrSession.Error())
+		writeServiceError(w, passkey.ErrSession)
 		return
 	}
 	res, err := h.svc.FinishDiscoverableLogin(r.Context(), sess, r)

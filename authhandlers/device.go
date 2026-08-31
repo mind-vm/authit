@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/mind-vm/authit/authithttp"
 	"math"
 	"net/http"
 	"time"
 
+	"github.com/mind-vm/authit/authithttp"
 	"github.com/mind-vm/authit/device"
 	authitjwt "github.com/mind-vm/authit/jwt"
 	"github.com/mind-vm/authit/ratelimit"

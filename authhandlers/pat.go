@@ -1,10 +1,10 @@
 package authhandlers
 
 import (
-	"github.com/mind-vm/authit/authithttp"
 	"net/http"
 	"time"
 
+	"github.com/mind-vm/authit/authithttp"
 	authitjwt "github.com/mind-vm/authit/jwt"
 	"github.com/mind-vm/authit/pat"
 	"github.com/mind-vm/authit/store"

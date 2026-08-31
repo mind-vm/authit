@@ -114,7 +114,7 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (authitjwt.
 		// and then be looked up and not found, which reads as "your
 		// session expired" rather than "this server is not configured the
 		// way you think". Say the second.
-		return authitjwt.Claims{}, ErrNotOpaqueSession
+		return authitjwt.Claims{}, ErrWrongSessionMode
 	}
 	if token == "" {
 		return authitjwt.Claims{}, ErrInvalidToken

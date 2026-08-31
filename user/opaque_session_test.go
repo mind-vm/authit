@@ -116,8 +116,8 @@ func TestOpaqueSessionIssuesOneCredential(t *testing.T) {
 	if res.Tokens.AccessToken == "" {
 		t.Fatal("expected a session token")
 	}
-	if _, err := f.svc.Refresh(ctx, res.Tokens.AccessToken, "ua", "127.0.0.1"); !errors.Is(err, user.ErrNotOpaqueSession) {
-		t.Fatalf("Refresh in opaque mode = %v, want ErrNotOpaqueSession", err)
+	if _, err := f.svc.Refresh(ctx, res.Tokens.AccessToken, "ua", "127.0.0.1"); !errors.Is(err, user.ErrWrongSessionMode) {
+		t.Fatalf("Refresh in opaque mode = %v, want ErrWrongSessionMode", err)
 	}
 }
 
@@ -146,8 +146,8 @@ func TestValidateSessionRefusesInJWTMode(t *testing.T) {
 	// point -- looking the token up first and reporting "not found" would
 	// tell a caller their session expired when the truth is that this
 	// server never had one.
-	if _, err := svc.ValidateSession(context.Background(), "anything-at-all"); !errors.Is(err, user.ErrNotOpaqueSession) {
-		t.Fatalf("ValidateSession in JWT mode = %v, want ErrNotOpaqueSession", err)
+	if _, err := svc.ValidateSession(context.Background(), "anything-at-all"); !errors.Is(err, user.ErrWrongSessionMode) {
+		t.Fatalf("ValidateSession in JWT mode = %v, want ErrWrongSessionMode", err)
 	}
 }
 

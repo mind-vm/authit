@@ -45,35 +45,45 @@
 // NewDeviceHandler speaks OAuth wire format (form-encoded requests, RFC
 // 6749 error bodies) rather than this package's own JSON conventions.
 //
-//	mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(users, verifier)))
+//	auth := authithttp.VerifierAuth(signer)
+//	mux.Handle("/auth/", http.StripPrefix("/auth", authhandlers.NewUserHandler(users, auth)))
 //	mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewTeamHandler(teams, auth,
 //		authhandlers.RoleAuthorizer{Teams: teams})))
-//	mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewPATHandler(pats, verifier)))
+//	mux.Handle("/api/", http.StripPrefix("/api", authhandlers.NewPATHandler(pats, auth)))
 //	adminMux.Handle("/", authhandlers.NewSuperuserHandler(supers))
 //
-// # Two constructors demand an argument authit cannot supply
+// # Constructors that demand an argument authit cannot supply
 //
-// NewTeamHandler requires a TeamAuthorizer, and NewDeviceHandler requires a
-// DeviceTokenIssuer and a verification URI. Both panic without them, at
-// startup rather than at the first request.
+// Each panics without it, at startup rather than at the first request.
 //
-// This is deliberate. The team package does not check the caller's own role
-// -- authorization is the host's model, and it says so -- which means a
-// route group that only asked "is this request authenticated" would let any
-// user change any member's role in any team. And device.PollDeviceToken
-// resolves who approved a request without minting anything, because what
-// credential a CLI should receive is the host's decision. Neither gap can
-// be filled with a default that is safe everywhere, so neither gets one.
+// NewTeamHandler requires a TeamAuthorizer. The team package does not check
+// the caller's own role -- authorization is the host's model, and it says
+// so -- which means a route group that only asked "is this request
+// authenticated" would let any user change any member's role in any team.
+// RoleAuthorizer applies authz.DefaultPolicy() for the conventional rules.
+//
+// NewDeviceHandler requires a DeviceTokenIssuer and a verification URI:
+// device.PollDeviceToken resolves who approved a request without minting
+// anything, because what credential a CLI should receive is the host's
+// decision, and only the host knows its own verification page's URL.
+//
+// NewOIDCHandler and NewPasskeyHandler require WithCeremonyKey. Their
+// ceremony cookie is not somewhere to park a value -- it is what the
+// ceremony verifies against -- and unsigned, a caller writes its own.
+//
+// None of these gaps can be filled with a default that is safe everywhere,
+// so none of them gets one.
 //
 // # What it does not do
 //
 // CORS, rate limiting, request logging, TLS, and routing beyond this
 // handler's own subtree are the host's job — this package assumes it is
 // mounted behind whatever the host already has. Protected routes (session
-// management, password change, 2FA management) authenticate the caller by
-// validating the request's bearer token with the same key material the
-// host's user.Service uses (via authithttp.Validate) and using
+// management, password change, 2FA management) authenticate the caller
+// through the authithttp.Authenticator each constructor is given, and use
 // claims.Subject as the user id; there is no cookie or CSRF handling.
+// Pass authithttp.VerifierAuth(signer) for the default signature check, or
+// UserSessionAuth(svc) when user.Config.SessionMode is SessionModeOpaque.
 package authhandlers
 
 import (

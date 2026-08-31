@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/mind-vm/authit/authithttp"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mind-vm/authit/authhandlers"
+	"github.com/mind-vm/authit/authithttp"
 	"github.com/mind-vm/authit/device"
 	authitjwt "github.com/mind-vm/authit/jwt"
 	"github.com/mind-vm/authit/memstore"

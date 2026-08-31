@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
-	"github.com/mind-vm/authit/ratelimit"
 	"time"
 
 	"github.com/mind-vm/authit/audit"
 	authitcrypto "github.com/mind-vm/authit/crypto"
+	"github.com/mind-vm/authit/ratelimit"
 	"github.com/mind-vm/authit/store"
 )
 

@@ -39,9 +39,19 @@ var (
 	// nothing to exclude, the only honest options are revoking every
 	// session including the caller's own, or refusing. It refuses.
 	ErrCurrentSessionRequired = errors.New("authit/user: the current session must be identified")
-	// ErrNotOpaqueSession is returned by Refresh when Config.SessionMode is
-	// SessionModeOpaque. There is no refresh token in that mode -- the
-	// session token is the credential, and it is extended by using it
-	// rather than exchanged for a new one.
-	ErrNotOpaqueSession = errors.New("authit/user: refresh is not used in opaque session mode")
+	// ErrWrongSessionMode means the operation does not exist in the
+	// configured Config.SessionMode. It covers both directions:
+	//
+	//	Refresh          in SessionModeOpaque -- there is no refresh token
+	//	                 in that mode; the session token is the credential,
+	//	                 extended by use rather than exchanged.
+	//	ValidateSession  in SessionModeJWT -- there is no session row to
+	//	                 look a token up in; verify its signature instead.
+	//
+	// One sentinel rather than two because a caller can do nothing
+	// different about them: both mean the code was written against the
+	// other mode. It is deliberately not ErrInvalidToken -- looking the
+	// token up first and reporting "not found" would tell a caller their
+	// session expired when the truth is that this server never had one.
+	ErrWrongSessionMode = errors.New("authit/user: operation is not available in the configured session mode")
 )

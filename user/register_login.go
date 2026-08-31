@@ -300,7 +300,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 		// on demand is a facility nothing needs. A caller reaching here has
 		// wired a JWT-mode flow against an opaque-mode service, and should
 		// find out now.
-		return TokenPair{}, ErrNotOpaqueSession
+		return TokenPair{}, ErrWrongSessionMode
 	}
 	hash := authitcrypto.HashToken(refreshToken)
 	t, err := s.stores.RefreshTokens.GetRefreshTokenByHash(ctx, hash)

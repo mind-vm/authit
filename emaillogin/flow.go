@@ -171,10 +171,16 @@ func usable(t *store.EmailLoginToken) bool {
 //
 // usable() was checked before this, but a check is not a claim: two
 // redemptions of one link can both read an unused token. Marking it used is
-// a compare-and-set, and winning that is what authorises the rest -- so it
-// happens before an account is resolved or created, and a caller that loses
-// gets the same ErrInvalidToken as one presenting a token that was never
-// real.
+// a compare-and-set, and winning that is what authorises the rest -- a
+// caller that loses gets the same ErrInvalidToken as one presenting a token
+// that was never real.
+//
+// Where the mark sits differs by path, on purpose. Signing up marks first,
+// inside the transaction that creates the account, so two redemptions of
+// one link cannot race to create the same user. Resolving an existing one
+// looks the user up first: a lookup that finds nothing takes the sign-up
+// branch or refuses, and neither should have spent the credential on the
+// way past.
 //
 // The cost is that a failure after this point burns the credential: the
 // user asks for another link rather than retrying this one. That is the

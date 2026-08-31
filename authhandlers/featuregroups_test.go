@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/mind-vm/authit/authithttp"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mind-vm/authit/authhandlers"
+	"github.com/mind-vm/authit/authithttp"
 	"github.com/mind-vm/authit/emaillogin"
 	authitjwt "github.com/mind-vm/authit/jwt"
 	"github.com/mind-vm/authit/memstore"

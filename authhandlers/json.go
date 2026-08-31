@@ -80,7 +80,7 @@ var serviceErrors = []struct {
 	// server failing. Without an entry they fall to the default and answer
 	// 500, which reports a misuse as an outage.
 	{err: user.ErrCurrentSessionRequired, status: http.StatusBadRequest, code: "current_session_required"},
-	{err: user.ErrNotOpaqueSession, status: http.StatusBadRequest, code: "not_opaque_session"},
+	{err: user.ErrWrongSessionMode, status: http.StatusBadRequest, code: "wrong_session_mode"},
 
 	// superuser
 	{err: superuser.ErrInvalidCredentials, status: http.StatusUnauthorized, code: "invalid_credentials"},
