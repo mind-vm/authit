@@ -1000,7 +1000,11 @@ was the original escalation.
 
 ### Tier 3 — developer experience
 
-**T3.1 — `authitctl`.** ◐ *Specified, not built* — [authitctl.md](authitctl.md), which narrows this
+**T3.1 — `authitctl`.** ◐ *Half built* — [authitctl.md](authitctl.md). The reference-schema package
+it needs is done (`sqlbstore/refschema`), and was worth building on its own: the wiring hosts copy is
+now a package they can import, and the conformance run exercises that package rather than a private
+copy inside a `_test.go` file. The CLI itself is not built, and which dialects it should emit is
+still open. The spec narrows this
 entry on one axis and widens it on another. Narrower: there is no SQLite or MySQL anywhere in this
 repository, so those dialects would be hand-authored DDL that nothing can run — the bet this branch
 has already lost twice. Wider: `superuser create` needs a concrete Postgres binding authit does not

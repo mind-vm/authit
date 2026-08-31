@@ -1,6 +1,8 @@
 # Spec — T3.1, `authitctl`
 
-Status: **proposed**, not implemented. Two decisions need settling; one of them narrows the item.
+Status: **partly built.** D2(a) — the reference-schema package — is done and shipped as
+`sqlbstore/refschema`; see the note under §3. The CLI itself is still proposed, and D1 (which
+dialects) is still open.
 
 ---
 
@@ -47,8 +49,13 @@ import.
 
 So the CLI needs a binding that does not currently exist as real code. Three ways:
 
-**(a) Promote the example row types into a real package. Recommended.** A new
-`sqlbstore/refschema` holding the row types and store constructors for `schema.sql` exactly.
+**(a) Promote the example row types into a real package. Recommended — and now done.** ✅
+`sqlbstore/refschema` holds the row types and store constructors for `schema.sql` exactly, and
+`example_test.go` drives that package instead of a private copy, so the conformance run and a host's
+import are the same lines. A `TestRowTypesMatchTheReferenceSchema` guard compares every `db:` tag
+against the DDL without needing a database, because the suite that would otherwise catch a renamed
+column skips silently when no DSN is set — which makes "nobody noticed" and "it works" look
+identical.
 
 This is worth doing on its own merits, independent of the CLI. `example_test.go` is described in its
 own comments as the wiring a host copies, and one of the two bugs the first live Postgres run found —

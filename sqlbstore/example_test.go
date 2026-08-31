@@ -1,21 +1,18 @@
 package sqlbstore_test
 
-// This file is the worked example the README's wiring snippet stops short
-// of: every store in user.Stores, wired through sqlbstore against the
-// table set in authit's reference schema.sql, ending in a working
-// user.Service.
+// This file drives the reference binding through authit's real user flows.
 //
-// Two things it is deliberately not: a package you can import (it is a test
-// file, so the row types below are yours to copy and rename), and a claim
-// that these column names are required. Nothing in authit reads schema.sql;
-// the adapters below are exactly where your names get mapped onto authit's
-// fields, which is why every ToRow/FromRow pair is spelled out rather than
-// hidden behind a helper.
+// The wiring itself used to live here, which meant the worked example was
+// something you copied out of a test file and the tests exercised a private
+// copy of it. Both halves of that were bad, and the second one hid a bug:
+// see refschema's package doc. It is now an ordinary importable package,
+// and this file is only its test.
 //
-// TestExampleUserStoresAgainstReferenceSchema applies ../schema.sql verbatim
-// and runs the real flows over it, so the reference schema is checked by
-// this suite rather than merely believed. It skips when no Postgres DSN is
-// configured.
+// What remains here is the part that cannot move: applying ../schema.sql
+// verbatim to a real database and running the flows over it, so the
+// reference schema is checked rather than merely believed. It skips when no
+// Postgres DSN is configured -- and a skipped run is not a passing one, as
+// this package's own history shows.
 
 import (
 	"context"
@@ -26,375 +23,23 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	authitjwt "github.com/mind-vm/authit/jwt"
-	"github.com/mind-vm/authit/sqlbstore"
+	"github.com/mind-vm/authit/sqlbstore/refschema"
 	"github.com/mind-vm/authit/store"
 	"github.com/mind-vm/authit/user"
 	"github.com/mind-vm/sqlb"
 )
 
-// ---------------------------------------------------------------------------
-// Row types -- one per table in schema.sql's user plane.
-// ---------------------------------------------------------------------------
+// These two indirections keep the tests below reading as they did. Read
+// refschema for the worked example: a Table[R, T] carrying the two-way
+// conversion, plus the handful of column names each adapter needs beyond
+// the primary key in order to filter.
 
-type exampleUser struct {
-	ID              string     `db:"id" sqlb:"type:uuid,pk,default"`
-	Email           string     `db:"email" sqlb:"type:text"`
-	PasswordHash    string     `db:"password_hash" sqlb:"type:text"`
-	EmailVerified   bool       `db:"email_verified" sqlb:"type:boolean,default"`
-	EmailVerifiedAt *time.Time `db:"email_verified_at" sqlb:"type:timestamptz"`
-	CreatedAt       time.Time  `db:"created_at" sqlb:"type:timestamptz,default"`
-	UpdatedAt       time.Time  `db:"updated_at" sqlb:"type:timestamptz,default"`
-}
-
-func (exampleUser) TableName() string { return "users" }
-
-type exampleRefreshToken struct {
-	ID        string     `db:"id" sqlb:"type:uuid,pk,default"`
-	UserID    string     `db:"user_id" sqlb:"type:uuid"`
-	TokenHash string     `db:"token_hash" sqlb:"type:text"`
-	ExpiresAt time.Time  `db:"expires_at" sqlb:"type:timestamptz"`
-	RevokedAt *time.Time `db:"revoked_at" sqlb:"type:timestamptz"`
-	UserAgent string     `db:"user_agent" sqlb:"type:text,default"`
-	IPAddress string     `db:"ip_address" sqlb:"type:text,default"`
-	CreatedAt time.Time  `db:"created_at" sqlb:"type:timestamptz,default"`
-}
-
-func (exampleRefreshToken) TableName() string { return "refresh_tokens" }
-
-type examplePasswordReset struct {
-	ID        string     `db:"id" sqlb:"type:uuid,pk,default"`
-	UserID    string     `db:"user_id" sqlb:"type:uuid"`
-	TokenHash string     `db:"token_hash" sqlb:"type:text"`
-	ExpiresAt time.Time  `db:"expires_at" sqlb:"type:timestamptz"`
-	UsedAt    *time.Time `db:"used_at" sqlb:"type:timestamptz"`
-	CreatedAt time.Time  `db:"created_at" sqlb:"type:timestamptz,default"`
-}
-
-func (examplePasswordReset) TableName() string { return "password_reset_tokens" }
-
-type exampleEmailVerification struct {
-	ID        string     `db:"id" sqlb:"type:uuid,pk,default"`
-	UserID    string     `db:"user_id" sqlb:"type:uuid"`
-	TokenHash string     `db:"token_hash" sqlb:"type:text"`
-	ExpiresAt time.Time  `db:"expires_at" sqlb:"type:timestamptz"`
-	UsedAt    *time.Time `db:"used_at" sqlb:"type:timestamptz"`
-	CreatedAt time.Time  `db:"created_at" sqlb:"type:timestamptz,default"`
-}
-
-func (exampleEmailVerification) TableName() string { return "email_verification_tokens" }
-
-// exampleTOTP is the one worth reading closely: store.TOTPSettings does not
-// use the field names the obvious table would ("confirmed", "backup_codes").
-// Enabled/VerifiedAt/RecoveryCodeHashes/RecoveryCodesUsed are what the type
-// actually has, and RecoveryCodeHashes is a []string whose storage is your
-// choice -- text[] here, a join table or a JSON column elsewhere.
-type exampleTOTP struct {
-	ID                 string     `db:"id" sqlb:"type:uuid,pk,default"`
-	UserID             string     `db:"user_id" sqlb:"type:uuid"`
-	SecretEncrypted    []byte     `db:"secret_encrypted" sqlb:"type:bytea"`
-	Enabled            bool       `db:"enabled" sqlb:"type:boolean,default"`
-	VerifiedAt         *time.Time `db:"verified_at" sqlb:"type:timestamptz"`
-	RecoveryCodeHashes []string   `db:"recovery_code_hashes" sqlb:"type:text,default"`
-	RecoveryCodesUsed  int        `db:"recovery_codes_used" sqlb:"type:integer,default"`
-	CreatedAt          time.Time  `db:"created_at" sqlb:"type:timestamptz,default"`
-	UpdatedAt          time.Time  `db:"updated_at" sqlb:"type:timestamptz,default"`
-}
-
-func (exampleTOTP) TableName() string { return "totp_settings" }
-
-type examplePendingTwoFactor struct {
-	ID        string    `db:"id" sqlb:"type:uuid,pk,default"`
-	UserID    string    `db:"user_id" sqlb:"type:uuid"`
-	TokenHash string    `db:"token_hash" sqlb:"type:text"`
-	ExpiresAt time.Time `db:"expires_at" sqlb:"type:timestamptz"`
-	CreatedAt time.Time `db:"created_at" sqlb:"type:timestamptz,default"`
-}
-
-func (examplePendingTwoFactor) TableName() string { return "pending_two_factor_sessions" }
-
-type exampleFailedLogin struct {
-	ID        string    `db:"id" sqlb:"type:uuid,pk,default"`
-	Email     string    `db:"email" sqlb:"type:text"`
-	IPAddress string    `db:"ip_address" sqlb:"type:text,default"`
-	CreatedAt time.Time `db:"created_at" sqlb:"type:timestamptz,default"`
-}
-
-func (exampleFailedLogin) TableName() string { return "failed_login_attempts" }
-
-type exampleWebAuthnChallenge struct {
-	ID        string    `db:"id" sqlb:"type:uuid,pk,default"`
-	TokenHash string    `db:"token_hash" sqlb:"type:text"`
-	UserID    *string   `db:"user_id" sqlb:"type:uuid"`
-	Data      []byte    `db:"data" sqlb:"type:bytea"`
-	ExpiresAt time.Time `db:"expires_at" sqlb:"type:timestamptz"`
-	CreatedAt time.Time `db:"created_at" sqlb:"type:timestamptz,default"`
-}
-
-func (exampleWebAuthnChallenge) TableName() string { return "webauthn_challenges" }
-
-// exampleWebAuthnChallenges is separate from exampleUserStores because the
-// challenge port belongs to passkey.Stores, not user.Stores -- the passkey
-// flow is not part of the user plane.
-func exampleWebAuthnChallenges(db sqlb.Executor) store.WebAuthnChallengeStore {
-	return sqlbstore.WebAuthnChallengeAdapter[exampleWebAuthnChallenge]{
-		Table: sqlbstore.Table[exampleWebAuthnChallenge, store.WebAuthnChallenge]{
-			ToRow: func(c store.WebAuthnChallenge) exampleWebAuthnChallenge {
-				return exampleWebAuthnChallenge{
-					TokenHash: c.TokenHash, UserID: c.UserID,
-					Data: c.Data, ExpiresAt: c.ExpiresAt,
-				}
-			},
-			FromRow: func(r exampleWebAuthnChallenge) store.WebAuthnChallenge {
-				return store.WebAuthnChallenge{
-					ID: r.ID, TokenHash: r.TokenHash, UserID: r.UserID,
-					Data: r.Data, ExpiresAt: r.ExpiresAt, CreatedAt: r.CreatedAt,
-				}
-			},
-			GetID:    func(c store.WebAuthnChallenge) string { return c.ID },
-			SetID:    func(r exampleWebAuthnChallenge, id string) exampleWebAuthnChallenge { r.ID = id; return r },
-			IDColumn: "id",
-			// A challenge is written once and destroyed by the only
-			// read of it. There is nothing to update.
-			ToUpdateColumns: func(store.WebAuthnChallenge) map[string]any { return nil },
-		},
-		DB:              db,
-		TokenHashColumn: "token_hash",
-	}
-}
-
-// exampleAccountLock is the table with no authit type. LockoutStore needs
-// two tables, and only this one -- the set of currently-locked user ids --
-// is invisible from store/user.go. Its shape is entirely yours; all authit
-// asks is that a user id can be inserted, tested for, and deleted, and that
-// the id column is UNIQUE so a repeat lock is idempotent instead of an error.
-type exampleAccountLock struct {
-	UserID   string    `db:"user_id" sqlb:"type:uuid,pk"`
-	LockedAt time.Time `db:"locked_at" sqlb:"type:timestamptz,default"`
-}
-
-func (exampleAccountLock) TableName() string { return "account_locks" }
-
-// ---------------------------------------------------------------------------
-// Wiring -- every store in user.Stores.
-// ---------------------------------------------------------------------------
-
-// exampleUserStores builds the full set of ports user.NewService requires.
-// Note the shape each adapter repeats: a Table[R, T] carrying the two-way
-// conversion, then the handful of column names the adapter needs beyond the
-// primary key in order to filter.
 func exampleUserStores(db sqlb.Executor) user.Stores {
-	return user.Stores{
-		Users: sqlbstore.UserAdapter[exampleUser]{
-			Table: sqlbstore.Table[exampleUser, store.User]{
-				ToRow: func(u store.User) exampleUser {
-					return exampleUser{
-						Email: u.Email, PasswordHash: u.PasswordHash,
-						EmailVerified: u.EmailVerified, EmailVerifiedAt: u.EmailVerifiedAt,
-					}
-				},
-				FromRow: func(r exampleUser) store.User {
-					return store.User{
-						ID: r.ID, Email: r.Email, PasswordHash: r.PasswordHash,
-						EmailVerified: r.EmailVerified, EmailVerifiedAt: r.EmailVerifiedAt,
-						CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
-					}
-				},
-				GetID:    func(u store.User) string { return u.ID },
-				SetID:    func(r exampleUser, id string) exampleUser { r.ID = id; return r },
-				IDColumn: "id",
-				// Every column an update may legitimately change, written as
-				// an explicit bound parameter -- including the booleans, which
-				// is the whole reason this isn't derived from ToRow.
-				ToUpdateColumns: func(u store.User) map[string]any {
-					return map[string]any{
-						"email": u.Email, "password_hash": u.PasswordHash,
-						"email_verified": u.EmailVerified, "email_verified_at": u.EmailVerifiedAt,
-						"updated_at": u.UpdatedAt,
-					}
-				},
-			},
-			DB:          db,
-			EmailColumn: "email",
-		},
+	return refschema.UserStores(db)
+}
 
-		RefreshTokens: sqlbstore.RefreshTokenAdapter[exampleRefreshToken]{
-			Table: sqlbstore.Table[exampleRefreshToken, store.RefreshToken]{
-				ToRow: func(t store.RefreshToken) exampleRefreshToken {
-					return exampleRefreshToken{
-						UserID: t.UserID, TokenHash: t.TokenHash, ExpiresAt: t.ExpiresAt,
-						RevokedAt: t.RevokedAt, UserAgent: t.UserAgent, IPAddress: t.IPAddress,
-					}
-				},
-				FromRow: func(r exampleRefreshToken) store.RefreshToken {
-					return store.RefreshToken{
-						ID: r.ID, UserID: r.UserID, TokenHash: r.TokenHash, ExpiresAt: r.ExpiresAt,
-						RevokedAt: r.RevokedAt, UserAgent: r.UserAgent, IPAddress: r.IPAddress,
-						CreatedAt: r.CreatedAt,
-					}
-				},
-				GetID:    func(t store.RefreshToken) string { return t.ID },
-				SetID:    func(r exampleRefreshToken, id string) exampleRefreshToken { r.ID = id; return r },
-				IDColumn: "id",
-				ToUpdateColumns: func(t store.RefreshToken) map[string]any {
-					return map[string]any{"revoked_at": t.RevokedAt, "expires_at": t.ExpiresAt}
-				},
-			},
-			DB:              db,
-			UserIDColumn:    "user_id",
-			TokenHashColumn: "token_hash",
-			RevokedAtColumn: "revoked_at",
-			ExpiresAtColumn: "expires_at",
-		},
-
-		PasswordResets: sqlbstore.PasswordResetAdapter[examplePasswordReset]{
-			Table: sqlbstore.Table[examplePasswordReset, store.PasswordResetToken]{
-				ToRow: func(t store.PasswordResetToken) examplePasswordReset {
-					return examplePasswordReset{
-						UserID: t.UserID, TokenHash: t.TokenHash, ExpiresAt: t.ExpiresAt, UsedAt: t.UsedAt,
-					}
-				},
-				FromRow: func(r examplePasswordReset) store.PasswordResetToken {
-					return store.PasswordResetToken{
-						ID: r.ID, UserID: r.UserID, TokenHash: r.TokenHash,
-						ExpiresAt: r.ExpiresAt, UsedAt: r.UsedAt, CreatedAt: r.CreatedAt,
-					}
-				},
-				GetID:    func(t store.PasswordResetToken) string { return t.ID },
-				SetID:    func(r examplePasswordReset, id string) examplePasswordReset { r.ID = id; return r },
-				IDColumn: "id",
-				ToUpdateColumns: func(t store.PasswordResetToken) map[string]any {
-					return map[string]any{"used_at": t.UsedAt}
-				},
-			},
-			DB:              db,
-			UserIDColumn:    "user_id",
-			TokenHashColumn: "token_hash",
-			UsedAtColumn:    "used_at",
-		},
-
-		EmailVerifications: sqlbstore.EmailVerificationAdapter[exampleEmailVerification]{
-			Table: sqlbstore.Table[exampleEmailVerification, store.EmailVerificationToken]{
-				ToRow: func(t store.EmailVerificationToken) exampleEmailVerification {
-					return exampleEmailVerification{
-						UserID: t.UserID, TokenHash: t.TokenHash, ExpiresAt: t.ExpiresAt, UsedAt: t.UsedAt,
-					}
-				},
-				FromRow: func(r exampleEmailVerification) store.EmailVerificationToken {
-					return store.EmailVerificationToken{
-						ID: r.ID, UserID: r.UserID, TokenHash: r.TokenHash,
-						ExpiresAt: r.ExpiresAt, UsedAt: r.UsedAt, CreatedAt: r.CreatedAt,
-					}
-				},
-				GetID:    func(t store.EmailVerificationToken) string { return t.ID },
-				SetID:    func(r exampleEmailVerification, id string) exampleEmailVerification { r.ID = id; return r },
-				IDColumn: "id",
-				ToUpdateColumns: func(t store.EmailVerificationToken) map[string]any {
-					return map[string]any{"used_at": t.UsedAt}
-				},
-			},
-			DB:              db,
-			UserIDColumn:    "user_id",
-			TokenHashColumn: "token_hash",
-			UsedAtColumn:    "used_at",
-		},
-
-		TOTP: sqlbstore.TOTPAdapter[exampleTOTP]{
-			Table: sqlbstore.Table[exampleTOTP, store.TOTPSettings]{
-				ToRow: func(t store.TOTPSettings) exampleTOTP {
-					return exampleTOTP{
-						UserID: t.UserID, SecretEncrypted: t.SecretEncrypted, Enabled: t.Enabled,
-						VerifiedAt: t.VerifiedAt, RecoveryCodeHashes: t.RecoveryCodeHashes,
-						RecoveryCodesUsed: t.RecoveryCodesUsed,
-					}
-				},
-				FromRow: func(r exampleTOTP) store.TOTPSettings {
-					return store.TOTPSettings{
-						ID: r.ID, UserID: r.UserID, SecretEncrypted: r.SecretEncrypted, Enabled: r.Enabled,
-						VerifiedAt: r.VerifiedAt, RecoveryCodeHashes: r.RecoveryCodeHashes,
-						RecoveryCodesUsed: r.RecoveryCodesUsed, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
-					}
-				},
-				GetID:    func(t store.TOTPSettings) string { return t.ID },
-				SetID:    func(r exampleTOTP, id string) exampleTOTP { r.ID = id; return r },
-				IDColumn: "id",
-				// enabled is the trap in miniature: confirming enrollment
-				// flips it true, disabling 2FA flips it back to false, and an
-				// update that can't write an explicit false silently leaves
-				// 2FA on.
-				ToUpdateColumns: func(t store.TOTPSettings) map[string]any {
-					return map[string]any{
-						"secret_encrypted": t.SecretEncrypted, "enabled": t.Enabled,
-						"verified_at": t.VerifiedAt, "recovery_code_hashes": t.RecoveryCodeHashes,
-						"recovery_codes_used": t.RecoveryCodesUsed, "updated_at": t.UpdatedAt,
-					}
-				},
-			},
-			DB:           db,
-			UserIDColumn: "user_id",
-		},
-
-		PendingTwoFactor: sqlbstore.PendingTwoFactorAdapter[examplePendingTwoFactor]{
-			Table: sqlbstore.Table[examplePendingTwoFactor, store.PendingTwoFactorSession]{
-				ToRow: func(s store.PendingTwoFactorSession) examplePendingTwoFactor {
-					return examplePendingTwoFactor{UserID: s.UserID, TokenHash: s.TokenHash, ExpiresAt: s.ExpiresAt}
-				},
-				FromRow: func(r examplePendingTwoFactor) store.PendingTwoFactorSession {
-					return store.PendingTwoFactorSession{
-						ID: r.ID, UserID: r.UserID, TokenHash: r.TokenHash,
-						ExpiresAt: r.ExpiresAt, CreatedAt: r.CreatedAt,
-					}
-				},
-				GetID:    func(s store.PendingTwoFactorSession) string { return s.ID },
-				SetID:    func(r examplePendingTwoFactor, id string) examplePendingTwoFactor { r.ID = id; return r },
-				IDColumn: "id",
-				// Nothing about a pending session is ever updated: it is
-				// created, read once, and deleted.
-				ToUpdateColumns: func(store.PendingTwoFactorSession) map[string]any { return nil },
-			},
-			DB:              db,
-			TokenHashColumn: "token_hash",
-		},
-
-		// The two-table one. Attempts fit Table like everything else; the
-		// locks side is configured with a row constructor instead, because
-		// there is no authit type to convert to or from.
-		Lockouts: sqlbstore.LockoutAdapter[exampleFailedLogin, exampleAccountLock]{
-			Attempts: sqlbstore.Table[exampleFailedLogin, store.FailedLoginAttempt]{
-				ToRow: func(f store.FailedLoginAttempt) exampleFailedLogin {
-					// CreatedAt is carried through, unlike the other row
-					// types here that let the column default. It is not
-					// decoration on this table: the temporary lockout is
-					// derived by counting attempts newer than a `since`
-					// the caller computes from its own clock, so the row
-					// has to carry that same clock's timestamp. Dropping
-					// it makes every attempt land at the database's
-					// now(), which counts an hour-old failure as recent
-					// and turns a 15-minute throttle back into a
-					// permanent lock. The `default` tag still applies:
-					// sqlb writes DEFAULT for a zero time, so a host that
-					// genuinely wants now() can leave it unset.
-					return exampleFailedLogin{Email: f.Email, IPAddress: f.IPAddress, CreatedAt: f.CreatedAt}
-				},
-				FromRow: func(r exampleFailedLogin) store.FailedLoginAttempt {
-					return store.FailedLoginAttempt{
-						ID: r.ID, Email: r.Email, IPAddress: r.IPAddress, CreatedAt: r.CreatedAt,
-					}
-				},
-				GetID:    func(f store.FailedLoginAttempt) string { return f.ID },
-				SetID:    func(r exampleFailedLogin, id string) exampleFailedLogin { r.ID = id; return r },
-				IDColumn: "id",
-				// Attempts are only ever inserted, counted, and deleted.
-				ToUpdateColumns: func(store.FailedLoginAttempt) map[string]any { return nil },
-			},
-			AttemptsDB:             db,
-			AttemptEmailColumn:     "email",
-			AttemptCreatedAtColumn: "created_at",
-
-			LocksDB:          db,
-			NewLockRow:       func(userID string) exampleAccountLock { return exampleAccountLock{UserID: userID} },
-			LockUserIDColumn: "user_id",
-		},
-	}
+func exampleWebAuthnChallenges(db sqlb.Executor) store.WebAuthnChallengeStore {
+	return refschema.WebAuthnChallenges(db)
 }
 
 func exampleSigner(t *testing.T) authitjwt.Signer {

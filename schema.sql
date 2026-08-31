@@ -55,7 +55,12 @@
 CREATE TABLE users (
     id                uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     email             text        NOT NULL UNIQUE,
-    password_hash     text        NOT NULL,      -- bcrypt, from crypto.HashPassword
+    -- Written by Config.PasswordHasher, argon2id by default since T0.4.
+    -- The format is self-describing (PHC for argon2id, $2 for the bcrypt
+    -- this used to say), so a corpus can hold both while it migrates:
+    -- Authenticate re-hashes on the next successful login. Size it for the
+    -- longest format you might store, not the one you write today.
+    password_hash     text        NOT NULL,
     email_verified    boolean     NOT NULL DEFAULT false,
     email_verified_at timestamptz,               -- *time.Time: NULL until verified
     created_at        timestamptz NOT NULL DEFAULT now(),
