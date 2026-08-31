@@ -1000,7 +1000,15 @@ was the original escalation.
 
 ### Tier 3 — developer experience
 
-**T3.1 — `authitctl`.** `authitctl schema print --dialect postgres|sqlite|mysql` (emit the DDL, which
+**T3.1 — `authitctl`.** ◐ *Specified, not built* — [authitctl.md](authitctl.md), which narrows this
+entry on one axis and widens it on another. Narrower: there is no SQLite or MySQL anywhere in this
+repository, so those dialects would be hand-authored DDL that nothing can run — the bet this branch
+has already lost twice. Wider: `superuser create` needs a concrete Postgres binding authit does not
+ship, because every row type for the reference schema lives in `sqlbstore/example_test.go` and
+nothing can import it. Promoting those into a real package is the larger and more useful half, and
+would make the conformance run test the wiring hosts actually copy. Original text follows.
+
+`authitctl schema print --dialect postgres|sqlite|mysql` (emit the DDL, which
 today is a hand-maintained `schema.sql` for Postgres only) and `authitctl superuser create`. That is
 the genuinely useful half of better-auth's CLI. Skip migrations — authit does not own the schema and
 should not pretend to.
