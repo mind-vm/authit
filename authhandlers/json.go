@@ -76,6 +76,11 @@ var serviceErrors = []struct {
 	{err: user.ErrTwoFactorEnabled, status: http.StatusConflict, code: "two_factor_already_enabled"},
 	{err: user.ErrTwoFactorNotEnabled, status: http.StatusConflict, code: "two_factor_not_enabled"},
 	{err: user.ErrSessionNotFound, status: http.StatusNotFound, code: "session_not_found"},
+	// Both are the caller getting the shape of the request wrong, not this
+	// server failing. Without an entry they fall to the default and answer
+	// 500, which reports a misuse as an outage.
+	{err: user.ErrCurrentSessionRequired, status: http.StatusBadRequest, code: "current_session_required"},
+	{err: user.ErrNotOpaqueSession, status: http.StatusBadRequest, code: "not_opaque_session"},
 
 	// superuser
 	{err: superuser.ErrInvalidCredentials, status: http.StatusUnauthorized, code: "invalid_credentials"},

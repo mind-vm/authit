@@ -946,6 +946,15 @@ package that can see both. Nothing below the HTTP layer learned about HTTP.
 *Not in scope, deliberately:* `superuser` stays JWT-only, `pat` already validates by lookup and
 needed nothing, and there is no `freshAge` / re-authentication-for-sensitive-routes.
 
+*A gap the first version shipped with.* The end-to-end test covered sign-in, use, revoke-by-id and
+re-use — and not logout, which is the one session operation that takes its credential from the
+request body rather than the path. In opaque mode there is no refresh token to put there, so
+`POST /logout` revoked nothing and answered 204, and `revoke-others` answered 500. Found by a code
+review, not by the suite. In opaque mode all three now name the caller's session by its bearer
+token, and `/logout` sits behind the authenticator like every other operation on a session.
+`ErrCurrentSessionRequired` and `ErrNotOpaqueSession` also joined the error table, where they map to
+400 rather than falling through to a 500 that reports a caller's mistake as an outage.
+
 *Verified against Postgres.* `TouchRefreshToken`'s `revoked_at IS NULL` predicate — the thing
 standing between a revocation and the request racing it — is exercised by the reference-schema
 conformance run, not only by the in-memory fake.

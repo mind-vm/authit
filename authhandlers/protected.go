@@ -28,7 +28,8 @@ func (h *UserHandler) requestEmailVerification(w http.ResponseWriter, r *http.Re
 }
 
 func (h *UserHandler) listSessions(w http.ResponseWriter, r *http.Request, claims authitjwt.Claims) {
-	sessions, err := h.svc.ListSessions(r.Context(), claims.Subject, r.URL.Query().Get("current_refresh_token"))
+	current := h.currentSessionToken(r, r.URL.Query().Get("current_refresh_token"))
+	sessions, err := h.svc.ListSessions(r.Context(), claims.Subject, current)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -55,7 +56,8 @@ func (h *UserHandler) revokeOtherSessions(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if err := h.svc.RevokeOtherSessions(r.Context(), claims.Subject, req.CurrentRefreshToken); err != nil {
+	current := h.currentSessionToken(r, req.CurrentRefreshToken)
+	if err := h.svc.RevokeOtherSessions(r.Context(), claims.Subject, current); err != nil {
 		writeServiceError(w, err)
 		return
 	}
@@ -119,4 +121,14 @@ func (h *UserHandler) twoFactorStatus(w http.ResponseWriter, r *http.Request, cl
 		return
 	}
 	writeJSON(w, http.StatusOK, newTwoFactorStatusResponse(status))
+}
+
+// logoutSession ends the session the caller presented. Opaque mode only;
+// see NewUserHandler for why the JWT-mode route is a different one.
+func (h *UserHandler) logoutSession(w http.ResponseWriter, r *http.Request, _ authitjwt.Claims) {
+	if err := h.svc.Logout(r.Context(), h.currentSessionToken(r, "")); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

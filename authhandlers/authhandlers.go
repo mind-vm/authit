@@ -210,8 +210,17 @@ func NewUserHandler(svc *user.Service, auth authithttp.Authenticator, opts ...Op
 		// only to explain that it does nothing is worse than a 404, which
 		// says the same thing in the vocabulary a client already has.
 		mux.HandleFunc("POST /refresh", h.refresh)
+		mux.HandleFunc("POST /logout", h.logout)
+	} else {
+		// In opaque mode the session token *is* the bearer credential, so
+		// ending a session means presenting it the way every other
+		// operation does. The JWT-mode route takes a refresh token from
+		// the body and cannot: an opaque-mode client has no refresh token
+		// to put there, so it sent nothing and was answered 204 while its
+		// session stayed live. Logging out is not a place to report
+		// success without doing anything.
+		mux.HandleFunc("POST /logout", requireUser(auth, h.logoutSession))
 	}
-	mux.HandleFunc("POST /logout", h.logout)
 	mux.HandleFunc("POST /password/reset-request", h.requestPasswordReset)
 	mux.HandleFunc("POST /password/reset", h.resetPassword)
 	mux.HandleFunc("POST /email/verify", h.verifyEmail)
@@ -255,6 +264,24 @@ func requireUser(a authithttp.Authenticator, next authedHandlerFunc) http.Handle
 		}
 		next(w, r, claims)
 	}
+}
+
+// currentSessionToken names the caller's own session, for the three
+// operations that must tell it apart from their other ones: listing (to
+// mark which is current), revoking the others, and logging out.
+//
+// In JWT mode that is the refresh token, which the caller sends in the body
+// or the query because the access token it authenticates with is not the
+// session. In opaque mode there is no refresh token and the bearer
+// credential *is* the session, so taking it from the request body would be
+// asking for something the caller does not have -- which is exactly what
+// used to happen, and it failed silently.
+func (h *UserHandler) currentSessionToken(r *http.Request, fromRequest string) string {
+	if h.svc.SessionMode() == user.SessionModeOpaque {
+		token, _ := authithttp.BearerToken(r)
+		return token
+	}
+	return fromRequest
 }
 
 // UserSessionAuth wires a user.Service in SessionModeOpaque to the route

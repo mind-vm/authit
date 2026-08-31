@@ -60,7 +60,7 @@ func (s *Service) RevokeSession(ctx context.Context, userID, sessionID string) e
 // matching currentRefreshToken.
 func (s *Service) RevokeOtherSessions(ctx context.Context, userID, currentRefreshToken string) error {
 	if currentRefreshToken == "" {
-		return errors.New("authit/user: currentRefreshToken is required")
+		return ErrCurrentSessionRequired
 	}
 	currentHash := authitcrypto.HashToken(currentRefreshToken)
 	tokens, err := s.stores.RefreshTokens.ListActiveRefreshTokens(ctx, userID)

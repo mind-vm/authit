@@ -34,6 +34,11 @@ var (
 	ErrTwoFactorNotEnabled = errors.New("authit/user: two-factor not enabled")
 	ErrInvalidTwoFactor    = errors.New("authit/user: invalid two-factor code")
 	ErrSessionNotFound     = errors.New("authit/user: session not found")
+	// ErrCurrentSessionRequired means RevokeOtherSessions was not told
+	// which session to keep. It is the caller's mistake, not a fault: with
+	// nothing to exclude, the only honest options are revoking every
+	// session including the caller's own, or refusing. It refuses.
+	ErrCurrentSessionRequired = errors.New("authit/user: the current session must be identified")
 	// ErrNotOpaqueSession is returned by Refresh when Config.SessionMode is
 	// SessionModeOpaque. There is no refresh token in that mode -- the
 	// session token is the credential, and it is extended by using it

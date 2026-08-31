@@ -739,3 +739,99 @@ func TestOpaqueSessionModeOverHTTP(t *testing.T) {
 		t.Fatalf("a revoked session got %d on the next request, want 401: %s", w.Code, w.Body)
 	}
 }
+
+// TestOpaqueSessionLogoutAndRevokeOthers covers the two session operations
+// that name the caller's *own* session, which is the thing opaque mode
+// changes and the thing the first version of this suite did not test.
+//
+// In JWT mode both take the refresh token from the request body. In opaque
+// mode there is no refresh token, so a client following the documented
+// contract sends nothing -- and the handler then revoked nothing while
+// answering 204, or refused with a 500. Logging out is not a place to
+// return success without doing anything.
+func TestOpaqueSessionLogoutAndRevokeOthers(t *testing.T) {
+	ctx := context.Background()
+	p := newPlanes(t)
+	svc, err := user.NewService(user.Stores{
+		Users:              memstore.NewUserStore(),
+		RefreshTokens:      memstore.NewRefreshTokenStore(),
+		PasswordResets:     memstore.NewPasswordResetStore(),
+		EmailVerifications: memstore.NewEmailVerificationStore(),
+		TOTP:               memstore.NewTOTPStore(),
+		PendingTwoFactor:   memstore.NewPendingTwoFactorStore(),
+		Lockouts:           memstore.NewLockoutStore(),
+	}, p.signer, nil, user.Config{
+		SessionMode:       user.SessionModeOpaque,
+		EmailVerification: user.EmailVerificationOptional,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	h := authhandlers.NewUserHandler(svc, authhandlers.UserSessionAuth(svc))
+
+	u, err := svc.Register(ctx, "opaque@example.com", "correct-horse-battery-staple")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	signIn := func(t *testing.T) string {
+		t.Helper()
+		w := do(t, h, "POST", "/login", "", map[string]string{
+			"email": "opaque@example.com", "password": "correct-horse-battery-staple",
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("login: %d %s", w.Code, w.Body)
+		}
+		return decode[map[string]any](t, w)["tokens"].(map[string]any)["access_token"].(string)
+	}
+
+	t.Run("logout ends the session it was called with", func(t *testing.T) {
+		token := signIn(t)
+		// The body carries nothing: an opaque-mode client has no refresh
+		// token to put in it. The session is the bearer credential.
+		if w := do(t, h, "POST", "/logout", token, map[string]string{}); w.Code != http.StatusNoContent {
+			t.Fatalf("logout: %d %s", w.Code, w.Body)
+		}
+		if w := do(t, h, "GET", "/me/sessions", token, nil); w.Code != http.StatusUnauthorized {
+			t.Fatalf("the session survived logout: %d %s", w.Code, w.Body)
+		}
+	})
+
+	t.Run("revoke-others keeps the caller signed in", func(t *testing.T) {
+		keep := signIn(t)
+		other := signIn(t)
+
+		if w := do(t, h, "POST", "/me/sessions/revoke-others", keep, map[string]string{}); w.Code != http.StatusNoContent {
+			t.Fatalf("revoke-others: %d %s", w.Code, w.Body)
+		}
+		if w := do(t, h, "GET", "/me/sessions", keep, nil); w.Code != http.StatusOK {
+			t.Fatalf("revoke-others revoked the caller's own session: %d %s", w.Code, w.Body)
+		}
+		if w := do(t, h, "GET", "/me/sessions", other, nil); w.Code != http.StatusUnauthorized {
+			t.Fatalf("another session survived revoke-others: %d %s", w.Code, w.Body)
+		}
+		sessions, err := svc.ListSessions(ctx, u.ID, keep)
+		if err != nil {
+			t.Fatalf("ListSessions: %v", err)
+		}
+		if len(sessions) != 1 || !sessions[0].IsCurrent {
+			t.Fatalf("expected one session, marked current, got %+v", sessions)
+		}
+	})
+
+	t.Run("listing marks the caller's own session current", func(t *testing.T) {
+		token := signIn(t)
+		w := do(t, h, "GET", "/me/sessions", token, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("listing: %d %s", w.Code, w.Body)
+		}
+		var current int
+		for _, s := range decode[[]map[string]any](t, w) {
+			if s["is_current"] == true {
+				current++
+			}
+		}
+		if current != 1 {
+			t.Fatalf("expected exactly one session marked current, got %d", current)
+		}
+	})
+}
