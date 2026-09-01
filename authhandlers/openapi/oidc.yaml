@@ -1,0 +1,82 @@
+openapi: 3.1.0
+info:
+  title: authit — sign in with an external provider
+  version: "0"
+  description: |
+    Routes served by authhandlers.NewOIDCHandler.
+
+    The ceremony's state and PKCE verifier live in a short-lived, HMAC-signed
+    HttpOnly cookie (SameSite=Lax, because the callback is a top-level
+    navigation from the provider). An identity is joined to an account by
+    (provider, subject) only — never by email — so a provider that returns
+    someone else's address cannot take over their account.
+
+
+    Paths are relative to wherever you mount the group; authit chooses no
+    prefix. Each route group has its own document because the groups mount
+    independently and share path names — POST /login exists in both the user
+    and operator planes — and OpenAPI keys paths in a map.
+
+    A test checks that every path and method here is really served and vice
+    versa. Nothing checks that a schema still matches its Go struct: treat
+    the shapes as documentation and read the handler's DTOs when it matters.
+servers:
+  - url: /
+    description: The prefix you mounted the group at.
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, description: "Stable machine-readable code." }
+        message: { type: string }
+  responses:
+    Unauthorized:
+      description: No credential, or one that did not verify.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+paths:
+  /oidc/{provider}/start:
+    get:
+      summary: Begin the flow
+      description: Redirects to the provider and sets the ceremony cookie.
+      parameters: [{ name: provider, in: path, required: true, schema: { type: string } }]
+      responses:
+        "302": { description: Redirect to the provider. }
+        "404": { description: "unknown_provider.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /oidc/{provider}/callback:
+    get:
+      summary: Complete the flow
+      description: |
+        Verifies the state against the cookie in constant time before
+        exchanging the code. The response is whatever the host's
+        SessionIssuer writes.
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+        - { name: code, in: query, required: false, schema: { type: string } }
+        - { name: state, in: query, required: false, schema: { type: string } }
+        - { name: error, in: query, required: false, schema: { type: string }, description: "Set when the provider refused." }
+      responses:
+        "200": { description: Whatever the SessionIssuer writes. }
+        "400": { description: "state_mismatch, no_email, or exchange_failed.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: "signup_disabled.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: "account_not_linked — an account with this address exists and the policy will not join them automatically.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "502": { description: "provider_unreachable.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /me/accounts:
+    get:
+      summary: List your linked providers
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Linked accounts. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /me/accounts/{provider}:
+    delete:
+      summary: Unlink a provider
+      description: Refuses to remove the last credential the account can be reached with.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: provider, in: path, required: true, schema: { type: string } }]
+      responses:
+        "204": { description: Unlinked. }
+        "409": { description: "last_credential.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }

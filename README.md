@@ -208,6 +208,8 @@ mux.Handle("/passkeys/", authhandlers.NewPasskeyHandler(passkeySvc, auth, issuer
 
 They are separate handlers rather than one tree because they don't belong in the same place: the superuser group is an operator surface most deployments should keep off the public internet, and the device group speaks OAuth wire format (form-encoded requests, RFC 6749 error bodies) rather than this package's own JSON conventions.
 
+Each group has an OpenAPI 3.1 document under [`authhandlers/openapi/`](authhandlers/openapi/) — one per group, because the groups mount independently and share path names (`POST /login` exists in both the user and operator planes), and OpenAPI keys paths in a map. Paths are relative to wherever you mount the group. A test checks every path and method against the routes actually registered, in both directions.
+
 Protected routes authenticate the caller themselves, through the `authithttp.Authenticator` you pass in — no host middleware or context key required. CORS, rate limiting, and request logging are still yours.
 
 The `oidc` and `passkey` groups keep in-flight ceremony state in a short-lived `HttpOnly` cookie, **authenticated with a key you supply** via `WithCeremonyKey` — both constructors panic without one. The cookie is not a place to park a value until later; it is what the ceremony verifies against. For `oidc` it holds the state and PKCE verifier the callback is checked against; for `passkey` it holds a handle to the challenge, which lives server-side. Unsigned, a caller with `curl` writes its own, which `HttpOnly` does nothing about — the attacker never needs the browser to hold or send anything. Use at least 32 random bytes, stable across your instances and restarts.

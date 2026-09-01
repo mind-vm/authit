@@ -1,0 +1,114 @@
+openapi: 3.1.0
+info:
+  title: authit — passwordless email sign-in
+  version: "0"
+  description: |
+    Routes served by authhandlers.NewEmailLoginHandler: magic links and
+    short numeric codes.
+
+    Requesting always succeeds, whether or not the address is registered —
+    saying otherwise would make these routes an account-existence oracle.
+    Every redemption failure is one error, because distinguishing "expired"
+    from "wrong" tells an attacker whether the code they guessed was ever
+    real.
+
+    A link carries 256 bits and a code about twenty, so the code is only as
+    safe as the limit on guesses: wrong attempts are counted against the
+    token and it is destroyed once the budget is spent.
+
+
+    Paths are relative to wherever you mount the group; authit chooses no
+    prefix. Each route group has its own document because the groups mount
+    independently and share path names — POST /login exists in both the user
+    and operator planes — and OpenAPI keys paths in a map.
+
+    A test checks that every path and method here is really served and vice
+    versa. Nothing checks that a schema still matches its Go struct: treat
+    the shapes as documentation and read the handler's DTOs when it matters.
+servers:
+  - url: /
+    description: The prefix you mounted the group at.
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, description: "Stable machine-readable code." }
+        message: { type: string }
+  responses:
+    Unauthorized:
+      description: No credential, or one that did not verify.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+paths:
+  /email/link/request:
+    post:
+      summary: Send a magic link
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties: { email: { type: string, format: email } }
+      responses:
+        "204": { description: "Accepted, whether or not the address is registered." }
+        "429": { description: "Rate limited.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /email/link/redeem:
+    post:
+      summary: Redeem a magic link
+      description: |
+        Single-use. Creates the account if the address is new and sign-up is
+        enabled — redemption proves inbox control, so the address arrives
+        verified. The response is whatever the host's SessionIssuer writes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties: { token: { type: string } }
+      responses:
+        "200": { description: Whatever the SessionIssuer writes. }
+        "401": { description: "invalid_token — wrong, expired, already used, or exhausted.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: "signup_disabled, surfaced at redemption where only the inbox owner sees it.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /email/code/request:
+    post:
+      summary: Send a short sign-in code
+      description: Requesting a new code invalidates any outstanding one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties: { email: { type: string, format: email } }
+      responses:
+        "204": { description: Accepted. }
+        "429": { description: "Rate limited.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /email/code/redeem:
+    post:
+      summary: Redeem a sign-in code
+      description: |
+        A wrong code is counted against the token even though it did not
+        match, and the token is destroyed once the attempt budget is spent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code]
+              properties:
+                email: { type: string, format: email }
+                code: { type: string }
+      responses:
+        "200": { description: Whatever the SessionIssuer writes. }
+        "401": { description: "invalid_token.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: "signup_disabled.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: "Rate limited.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }

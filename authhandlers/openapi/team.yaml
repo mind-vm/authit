@@ -1,0 +1,219 @@
+openapi: 3.1.0
+info:
+  title: authit — team plane
+  version: "0"
+  description: |
+    Routes served by authhandlers.NewTeamHandler.
+
+    Every route consults the TeamAuthorizer the handler was constructed
+    with, before acting. RoleAuthorizer applies authz.DefaultPolicy(): an
+    active member may view, an active owner or admin may manage members and
+    invitations, and only an owner may grant the owner role or act on a
+    member who already holds it.
+    Paths are relative to wherever you mount the group; authit chooses no
+    prefix. Each route group has its own document because the groups mount
+    independently and share path names — POST /login exists in both the user
+    and operator planes — and OpenAPI keys paths in a map.
+
+    A test checks that every path and method here is really served and vice
+    versa. Nothing checks that a schema still matches its Go struct: treat
+    the shapes as documentation and read the handler's DTOs when it matters.
+servers:
+  - url: /
+    description: The prefix you mounted the group at.
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, description: "Stable machine-readable code." }
+        message: { type: string }
+  responses:
+    Unauthorized:
+      description: No credential, or one that did not verify.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Forbidden:
+      description: Authenticated, but not permitted.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+paths:
+  /teams:
+    post:
+      summary: Create a team
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug]
+              properties:
+                name: { type: string }
+                slug: { type: string }
+                display_name: { type: string, description: "The creator's member display name." }
+      responses:
+        "201": { description: "Created; the caller becomes its owner." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { description: "slug_taken.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /teams/{id}:
+    get:
+      summary: Read a team
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200": { description: The team. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /teams/by-slug:
+    get:
+      summary: Read a team by slug
+      description: A literal path rather than /teams/{slug}, which ServeMux cannot tell from /teams/{id}.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: slug, in: query, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: The team. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /teams/{id}/members:
+    get:
+      summary: List members
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200": { description: Members. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /me/memberships:
+    get:
+      summary: List your own memberships
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Memberships. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /members/{id}/role:
+    patch:
+      summary: Change a member's role
+      description: |
+        Granting `owner`, or acting on a member who already holds it,
+        additionally requires TeamActionManageOwners — which
+        authz.DefaultPolicy() gives only to owners. An admin able to grant
+        owner would grant it to itself and then remove the founder.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, description: "Any string; only `owner` has meaning to authit." }
+      responses:
+        "204": { description: Changed. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "last_owner — refusing to leave the team without one.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /members/{id}/active:
+    patch:
+      summary: Activate or deactivate a member
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_active]
+              properties: { is_active: { type: boolean } }
+      responses:
+        "204": { description: Changed. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "last_owner.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /members/{id}:
+    delete:
+      summary: Remove a member
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "204": { description: Removed. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "last_owner.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /teams/{id}/invitations:
+    post:
+      summary: Invite someone
+      description: |
+        The raw token is returned once. A host that emails the invitation
+        itself should drop it from its own response rather than forwarding
+        it to the browser. Inviting as `owner` requires owner rights, for
+        the same reason as the role route.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email: { type: string, format: email }
+                role: { type: string }
+      responses:
+        "201": { description: "Created, with the raw token." }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    get:
+      summary: List invitations
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200": { description: Invitations. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /teams/{id}/invitations/{invitationID}:
+    delete:
+      summary: Revoke an invitation
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: invitationID, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Revoked. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "invitation_invalid, including one belonging to another team.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /invitations/lookup:
+    post:
+      summary: Inspect an invitation before accepting
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties: { token: { type: string } }
+      responses:
+        "200": { description: The invitation. }
+        "404": { description: "invitation_invalid.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /invitations/accept:
+    post:
+      summary: Accept an invitation
+      description: |
+        The address is taken from the caller's token, never the body: an
+        invitation is bound to the address it was sent to, which is what
+        makes it an invitation rather than a coupon.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+                display_name: { type: string }
+      responses:
+        "201": { description: Joined. }
+        "403": { description: "email_mismatch.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: "invitation_invalid.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }

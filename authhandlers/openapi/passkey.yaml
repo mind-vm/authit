@@ -1,0 +1,124 @@
+openapi: 3.1.0
+info:
+  title: authit — passkeys (WebAuthn)
+  version: "0"
+  description: |
+    Routes served by authhandlers.NewPasskeyHandler.
+
+    The ceremony handle lives in a short-lived, HMAC-signed HttpOnly cookie
+    (SameSite=Strict) and names a challenge held server-side, redeemed
+    exactly once. Registration is authenticated: the ceremony proves
+    possession of an authenticator and nothing about whose account it
+    belongs on.
+
+    Request and response bodies on the four ceremony routes are the
+    browser's WebAuthn structures verbatim — pass them to and from
+    navigator.credentials without reshaping, since the signature is over
+    exactly those bytes.
+
+
+    Paths are relative to wherever you mount the group; authit chooses no
+    prefix. Each route group has its own document because the groups mount
+    independently and share path names — POST /login exists in both the user
+    and operator planes — and OpenAPI keys paths in a map.
+
+    A test checks that every path and method here is really served and vice
+    versa. Nothing checks that a schema still matches its Go struct: treat
+    the shapes as documentation and read the handler's DTOs when it matters.
+servers:
+  - url: /
+    description: The prefix you mounted the group at.
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, description: "Stable machine-readable code." }
+        message: { type: string }
+  responses:
+    Unauthorized:
+      description: No credential, or one that did not verify.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+paths:
+  /passkeys/login/begin:
+    post:
+      summary: Begin a usernameless sign-in
+      description: Names no user, so it cannot be used to ask whether an account exists.
+      responses:
+        "200": { description: "PublicKeyCredentialRequestOptions; sets the ceremony cookie." }
+  /passkeys/login/finish:
+    post:
+      summary: Complete a usernameless sign-in
+      description: The response is whatever the host's SessionIssuer writes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: "The browser's assertion, verbatim." }
+      responses:
+        "200": { description: Whatever the SessionIssuer writes. }
+        "400": { description: "ceremony_missing — no cookie, or one this server did not sign, or one already redeemed.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { description: "ceremony_failed — one code for every verification failure, since which check failed is an oracle.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: "clone_warning — the signature counter did not advance.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /me/passkeys/register/begin:
+    post:
+      summary: Begin registering an authenticator
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: "PublicKeyCredentialCreationOptions; sets the ceremony cookie." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /me/passkeys/register/finish:
+    post:
+      summary: Complete registration
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: name
+          in: query
+          required: false
+          schema: { type: string }
+          description: |
+            A label for the credential. A query parameter because the body
+            is the browser's attestation verbatim and must not be reshaped.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: "The browser's attestation, verbatim." }
+      responses:
+        "201": { description: The registered credential. }
+        "400": { description: "ceremony_missing.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: "already_registered.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /me/passkeys:
+    get:
+      summary: List your passkeys
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Credentials. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /me/passkeys/{id}:
+    patch:
+      summary: Rename a passkey
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        "204": { description: Renamed. }
+        "404": { description: "credential_not_found, including one belonging to someone else.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    delete:
+      summary: Remove a passkey
+      description: Refuses to remove the last thing the account can be reached with.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "204": { description: Removed. }
+        "409": { description: "last_credential.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }

@@ -1040,7 +1040,28 @@ test is one people learn to re-run.
 *Changed:* `authitctl/` (new module), `schema.go` (new), `sqlbstore/refschema/` (operator plane),
 `sqlbstore/table.go`, `sqlbstore/conformance_test.go`, `crypto/numericcode_test.go`.
 
-**T3.2 — OpenAPI document for `authhandlers`.** Hand-written YAML is fine; it is a fixed route set.
+**T3.2 — OpenAPI documents for `authhandlers`.** ✅ *Done*, as eight documents rather than one.
+
+*Why eight.* OpenAPI keys `paths` in a map, and these route groups mount independently and reuse path
+names: `POST /login` is served by both the user plane and the operator plane, `POST /logout` by
+three. They are different operations at different prefixes, and a single document cannot express
+that without inventing mount points authit deliberately does not choose. One file per group, each
+with `servers: [{url: /}]` meaning "wherever you mounted it".
+
+*Hand-written, but not unchecked.* A hand-written API document drifts the moment a route moves, and
+drifts silently — nothing compiles against it and nothing serves from it. This branch has found
+stale documentation five times in files far simpler than these. So `TestOpenAPIMatchesTheRoutes`
+reads the registrations out of each group's source and compares them against its document **in both
+directions**: a route with no operation and an operation with no route are both failures. Verified by
+adding an undocumented route and by documenting an absent one.
+
+*What it cannot check,* said in each document rather than left to be found: nothing verifies that a
+described schema still matches its Go struct. Paths, methods and auth are checked; shapes are
+documentation.
+
+*Changed:* `authhandlers/openapi/` (eight documents, ~1,300 lines), `authhandlers/openapi_test.go`.
+
+
 
 **T3.3 — Fill in the README's status.** "Early scaffold… not yet used in a production app" plus the
 Tier 0 items above is an accurate combination, but the README should name the specific caveats

@@ -1,0 +1,448 @@
+openapi: 3.1.0
+info:
+  title: authit — user plane
+  version: "0"
+  description: |
+    Routes served by authhandlers.NewUserHandler.
+
+    Paths are relative to wherever you mount the group. authit chooses no
+    prefix: `mux.Handle("/auth/", http.StripPrefix("/auth", h))` makes
+    `/login` into `/auth/login`. That is why each route group has its own
+    document rather than there being one for the library — `POST /login`
+    exists here and in the operator plane, `POST /logout` in three places,
+    and OpenAPI keys paths in a map.
+
+    Two routes depend on user.Config.SessionMode:
+
+      * SessionModeJWT (default) serves `POST /refresh`, and `POST /logout`
+        takes the refresh token in the body.
+      * SessionModeOpaque does not register `POST /refresh` at all — there
+        is no refresh token — and `POST /logout` is authenticated instead,
+        ending the session presented as the bearer credential.
+
+    Both are described below; which you get depends on how the service is
+    configured.
+
+    A caveat this document cannot enforce: a test checks that every path and
+    method here is really served and vice versa, but nothing checks that a
+    schema still matches its Go struct. Treat the shapes as documentation,
+    not as a contract, and read dto.go when it matters.
+servers:
+  - url: /
+    description: The prefix you mounted the group at.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        An access token in JWT mode, or the opaque session token in opaque
+        mode. Validated by the authithttp.Authenticator the handler was
+        constructed with.
+  schemas:
+    Error:
+      type: object
+      description: Every error response in this package has this shape.
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: A stable machine-readable code, e.g. invalid_credentials.
+        message: { type: string }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        email_verified: { type: boolean }
+        email_verified_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+    TokenPair:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: A JWT in SessionModeJWT; the opaque session token otherwise.
+        refresh_token:
+          type: string
+          description: Absent entirely in SessionModeOpaque, which has no refresh token.
+        expires_at: { type: string, format: date-time }
+    Session:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        is_current: { type: boolean }
+        user_agent: { type: string }
+        ip_address: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+  responses:
+    Unauthorized:
+      description: No credential, or one that did not verify.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: |
+        Refused by Config.RateLimiter. Carries Retry-After when the limiter
+        supplied a hint.
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds to wait. }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+paths:
+  /register:
+    post:
+      summary: Create an account
+      description: |
+        Does not sign the user in: it returns the account, and the caller
+        logs in separately. Registration and authentication are different
+        events, and a host may want to gate the second on email
+        verification.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "409": { description: email_taken., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { description: weak_password., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /login:
+    post:
+      summary: Authenticate
+      description: |
+        When the account has 2FA enabled the response carries
+        requires_two_factor and a pending_two_factor_token instead of
+        tokens; exchange it at /login/two-factor.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Authenticated, or a second factor is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requires_two_factor: { type: boolean }
+                  pending_two_factor_token: { type: string }
+                  tokens: { $ref: "#/components/schemas/TokenPair" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: email_not_verified., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "423": { description: account_locked — temporary, derived from recent failures., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /login/two-factor:
+    post:
+      summary: Complete a two-factor login
+      description: Accepts a TOTP code or a backup code.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pending_two_factor_token, code]
+              properties:
+                pending_two_factor_token: { type: string }
+                code: { type: string }
+      responses:
+        "200": { description: Authenticated., content: { application/json: { schema: { $ref: "#/components/schemas/TokenPair" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /refresh:
+    post:
+      summary: Exchange a refresh token for a new pair (SessionModeJWT only)
+      description: |
+        Not registered in SessionModeOpaque, where it answers 404: there is
+        no refresh token, and using the session extends it.
+
+        Rotation is enforced. Presenting a refresh token that was already
+        spent revokes every session the principal holds, because one of the
+        two holders is an attacker and there is no way to tell which.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties: { refresh_token: { type: string } }
+      responses:
+        "200": { description: A new pair., content: { application/json: { schema: { $ref: "#/components/schemas/TokenPair" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: Not served in SessionModeOpaque. }
+  /logout:
+    post:
+      summary: End a session
+      description: |
+        In SessionModeJWT this is unauthenticated and takes the refresh
+        token in the body. In SessionModeOpaque it requires the bearer
+        credential, which *is* the session, and the body is ignored.
+
+        Idempotent in JWT mode: an unknown token is still 204.
+      security:
+        - {}
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { refresh_token: { type: string } }
+      responses:
+        "204": { description: Ended, or there was nothing to end. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /password/reset-request:
+    post:
+      summary: Request a password-reset link
+      description: |
+        Always 204, whether or not the address is registered. Saying
+        otherwise turns this into an account-existence oracle.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties: { email: { type: string, format: email } }
+      responses:
+        "204": { description: Accepted. }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /password/reset:
+    post:
+      summary: Set a new password with a reset token
+      description: Consumes the token and revokes every session the user holds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, new_password]
+              properties:
+                token: { type: string }
+                new_password: { type: string, format: password }
+      responses:
+        "204": { description: Changed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { description: weak_password., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /email/verify:
+    post:
+      summary: Verify an email address
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties: { token: { type: string } }
+      responses:
+        "204": { description: Verified. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /email/verification-request:
+    post:
+      summary: Request a verification email by address
+      description: Always 204, for the same reason as the password-reset request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties: { email: { type: string, format: email } }
+      responses:
+        "204": { description: Accepted. }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /password/change:
+    post:
+      summary: Change your own password
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string, format: password }
+                new_password: { type: string, format: password }
+      responses:
+        "204": { description: Changed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { description: weak_password., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /me/email/verification-request:
+    post:
+      summary: Request a verification email for yourself
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Accepted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /me/sessions:
+    get:
+      summary: List your sessions
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: current_refresh_token
+          in: query
+          required: false
+          schema: { type: string }
+          description: |
+            Marks one session is_current. Read from the bearer credential
+            instead in SessionModeOpaque, where this parameter is ignored.
+      responses:
+        "200":
+          description: Active sessions.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Session" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /me/sessions/{id}:
+    delete:
+      summary: Revoke one session
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Revoked. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: session_not_found — including a session belonging to someone else., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /me/sessions/revoke-others:
+    post:
+      summary: Revoke every session except this one
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                current_refresh_token:
+                  type: string
+                  description: |
+                    Required in SessionModeJWT. Ignored in SessionModeOpaque,
+                    which uses the bearer credential.
+      responses:
+        "204": { description: Revoked. }
+        "400": { description: current_session_required., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /me/two-factor:
+    get:
+      summary: Two-factor status
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  verified_at: { type: [string, "null"], format: date-time }
+                  remaining_backup_codes: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /me/two-factor/setup:
+    post:
+      summary: Begin TOTP enrollment
+      description: Returns the secret and an otpauth URL. Not enabled until confirmed.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Enrollment material.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string }
+                  otpauth_url: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { description: two_factor_already_enabled., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /me/two-factor/confirm:
+    post:
+      summary: Confirm enrollment and receive backup codes
+      description: The codes are shown once and stored hashed.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties: { code: { type: string } }
+      responses:
+        "200":
+          description: Enabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backup_codes: { type: array, items: { type: string } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /me/two-factor/disable:
+    post:
+      summary: Disable two-factor
+      description: Requires a current code, so a borrowed session cannot turn it off.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties: { code: { type: string } }
+      responses:
+        "204": { description: Disabled. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { description: two_factor_not_enabled., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /me/two-factor/backup-codes/regenerate:
+    post:
+      summary: Replace the backup codes
+      description: Invalidates every previous code.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties: { code: { type: string } }
+      responses:
+        "200":
+          description: New codes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backup_codes: { type: array, items: { type: string } }
+        "401": { $ref: "#/components/responses/Unauthorized" }

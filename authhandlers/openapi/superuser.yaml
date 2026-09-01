@@ -1,0 +1,143 @@
+openapi: 3.1.0
+info:
+  title: authit — operator plane
+  version: "0"
+  description: |
+    Routes served by authhandlers.NewSuperuserHandler.
+
+    A separate plane, not a role. Operator tokens carry the audience
+    authit-superuser and are refused on user-plane routes even though they
+    are signed with the same key. Most deployments should keep this group
+    off the public internet.
+
+
+    Paths are relative to wherever you mount the group; authit chooses no
+    prefix. Each route group has its own document because the groups mount
+    independently and share path names — POST /login exists in both the user
+    and operator planes — and OpenAPI keys paths in a map.
+
+    A test checks that every path and method here is really served and vice
+    versa. Nothing checks that a schema still matches its Go struct: treat
+    the shapes as documentation and read the handler's DTOs when it matters.
+servers:
+  - url: /
+    description: The prefix you mounted the group at.
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, description: "Stable machine-readable code." }
+        message: { type: string }
+  responses:
+    Unauthorized:
+      description: No credential, or one that did not verify.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+paths:
+  /login:
+    post:
+      summary: Authenticate as an operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200": { description: "Authenticated; access and refresh tokens." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "account_inactive.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "423": { description: "account_locked.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: "Rate limited.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /refresh:
+    post:
+      summary: Rotate an operator refresh token
+      description: Reuse of a spent token revokes every operator session, as on the user plane.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties: { refresh_token: { type: string } }
+      responses:
+        "200": { description: A new pair. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /logout:
+    post:
+      summary: End an operator session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { refresh_token: { type: string } }
+      responses:
+        "204": { description: Ended. }
+  /superusers:
+    get:
+      summary: List operators
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Operators. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      summary: Create an operator
+      description: |
+        Records who did the creating. The very first operator cannot be made
+        here — there is nobody to authenticate as — and comes from
+        superuser.Bootstrap or `authitctl superuser create`.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+                display_name: { type: string }
+      responses:
+        "201": { description: Created. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { description: "weak_password.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /superusers/{id}/deactivate:
+    post:
+      summary: Deactivate an operator
+      description: Refuses to deactivate the caller, so the last operator cannot lock themselves out.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "204": { description: Deactivated. }
+        "409": { description: "cannot_deactivate_self.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /impersonate:
+    post:
+      summary: Mint a user token as an operator
+      description: |
+        The token is genuine and carries actor_id naming the operator, which
+        Claims.IsImpersonation reports. Whether acting-as is allowed on a
+        given route is the host's check — authit does not make it.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id: { type: string, format: uuid }
+                user_email: { type: string, format: email }
+      responses:
+        "200": { description: An access token for the named user. }
+        "401": { $ref: "#/components/responses/Unauthorized" }

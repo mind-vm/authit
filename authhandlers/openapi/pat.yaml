@@ -1,0 +1,69 @@
+openapi: 3.1.0
+info:
+  title: authit — personal access tokens
+  version: "0"
+  description: |
+    Routes served by authhandlers.NewPATHandler: a caller's own
+    long-lived bearer credentials, for CLIs and scripts.
+
+
+    Paths are relative to wherever you mount the group; authit chooses no
+    prefix. Each route group has its own document because the groups mount
+    independently and share path names — POST /login exists in both the user
+    and operator planes — and OpenAPI keys paths in a map.
+
+    A test checks that every path and method here is really served and vice
+    versa. Nothing checks that a schema still matches its Go struct: treat
+    the shapes as documentation and read the handler's DTOs when it matters.
+servers:
+  - url: /
+    description: The prefix you mounted the group at.
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, description: "Stable machine-readable code." }
+        message: { type: string }
+  responses:
+    Unauthorized:
+      description: No credential, or one that did not verify.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+paths:
+  /me/tokens:
+    post:
+      summary: Mint a personal access token
+      description: The raw token is returned once and stored only as a hash.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                scopes: { type: array, items: { type: string } }
+                expires_at: { type: [string, "null"], format: date-time }
+      responses:
+        "201": { description: "Created, with the raw token." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { description: "expiry_required or expiry_too_far.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    get:
+      summary: List your tokens
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Tokens, without their secrets. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /me/tokens/{id}:
+    delete:
+      summary: Revoke a token
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "204": { description: Revoked. }
+        "404": { description: "token_not_found, including one belonging to someone else.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }

@@ -1,0 +1,126 @@
+openapi: 3.1.0
+info:
+  title: authit — device authorization grant
+  version: "0"
+  description: |
+    Routes served by authhandlers.NewDeviceHandler: RFC 8628, the
+    "visit this URL and enter this code" flow for CLIs and devices with no
+    browser.
+
+    The two public routes speak OAuth wire format — form-encoded requests
+    and RFC 6749 error bodies — rather than this package's JSON
+    conventions, because that is what OAuth clients expect. The two
+    approval routes are ordinary authenticated JSON.
+
+
+    Paths are relative to wherever you mount the group; authit chooses no
+    prefix. Each route group has its own document because the groups mount
+    independently and share path names — POST /login exists in both the user
+    and operator planes — and OpenAPI keys paths in a map.
+
+    A test checks that every path and method here is really served and vice
+    versa. Nothing checks that a schema still matches its Go struct: treat
+    the shapes as documentation and read the handler's DTOs when it matters.
+servers:
+  - url: /
+    description: The prefix you mounted the group at.
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, description: "Stable machine-readable code." }
+        message: { type: string }
+  responses:
+    Unauthorized:
+      description: No credential, or one that did not verify.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+paths:
+  /device/code:
+    post:
+      summary: Start a device authorization (RFC 8628 §3.1)
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                client_id: { type: string }
+                scope: { type: string }
+      responses:
+        "200":
+          description: The device and user codes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_code: { type: string }
+                  user_code: { type: string }
+                  verification_uri: { type: string }
+                  verification_uri_complete: { type: string }
+                  expires_in: { type: integer }
+                  interval: { type: integer }
+  /device/token:
+    post:
+      summary: Poll for the token (RFC 8628 §3.4)
+      description: |
+        Answers RFC 6749 error codes: authorization_pending, slow_down,
+        access_denied, expired_token.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [device_code, grant_type]
+              properties:
+                device_code: { type: string }
+                grant_type: { type: string }
+                client_id: { type: string }
+      responses:
+        "200": { description: Whatever the host's DeviceTokenIssuer returns. }
+        "400":
+          description: An RFC 6749 error body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  error_description: { type: string }
+  /device/approve:
+    post:
+      summary: Approve a pending device
+      description: The authenticated user confirms the code their device displayed.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_code]
+              properties: { user_code: { type: string } }
+      responses:
+        "204": { description: Approved. }
+        "404": { description: "invalid_user_code.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: "Rate limited; user codes are short and guessing is metered.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /device/deny:
+    post:
+      summary: Deny a pending device
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_code]
+              properties: { user_code: { type: string } }
+      responses:
+        "204": { description: Denied. }
+        "404": { description: "invalid_user_code.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
