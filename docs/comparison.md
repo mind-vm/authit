@@ -1079,9 +1079,10 @@ Tier 0 items above is an accurate combination, but the README should name the sp
 
 ### Tier 4 — findings from the security review of this branch
 
-A `/security-review` pass over the 16 commits found three issues, each confirmed by an independent
-adversarial verification before being acted on. All three are fixed; a fourth, non-security crash
-turned up while reproducing one of them.
+A `/security-review` pass found three issues, each confirmed by an independent adversarial
+verification before being acted on, plus a non-security crash turned up while reproducing one of
+them. Two later code reviews added S4.5 and S4.6 — after the security pass had signed off, which is
+the argument for the second reader rather than the first. All six are fixed.
 
 **S4.1 — The WebAuthn ceremony cookie was unauthenticated, which was an account takeover.** ✅
 `setCeremonyCookie` wrote `base64(json(SessionData))` with no MAC and kept no server-side copy, so
@@ -1250,13 +1251,18 @@ second factor was un-rate-limited (§2.7a) while the first factor was rate-limit
 denial-of-service vector (§2.7c), and that backup codes carried 32 bits (§2.7b) — three things that
 were the difference between a library that is early and one that is unsafe.
 
-**All of Tier 0 is now fixed, and Tier 1 with it.** Tier 2 stands at T2.1–T2.3 plus T2.6; T2.4 and
-T2.5 are unstarted, and Tier 3 is untouched. A later security review of that work found four more
-issues, all fixed and recorded in Tier 4 — the largest of them, a passkey account takeover, existed
-only because of code added by this plan, which is the argument for reviewing hardening work rather
-than trusting it.
+**Every tier in this plan is complete** — Tier 0 through Tier 3. Reviews of that work found six
+further issues, all fixed and recorded in Tier 4; the largest, a passkey account takeover, existed
+only because of code this plan added, which is the argument for reviewing hardening work rather than
+trusting it.
+
+Keep this paragraph honest. It has now been wrong three times: once describing every Tier 0 defect
+as live long after they were fixed, once calling T2.4 and T2.5 unstarted in a file that marked them
+done, and once because the edit that fixed it was silently discarded when a later assertion in the
+same script failed. A summary is the first thing read and the last thing updated.
 
 What that leaves is a library whose headline risk is no longer a list of defects but the ordinary
 one: it is young, and the parts of it verified against a real database are still fewer than the
-parts verified only against an in-memory fake. Decide about T2.4 on its merits. Porting anything
+parts verified only against an in-memory fake — 10 of the 18 conformance ports have met a real
+database, and the README names the other 8. Porting anything
 else from better-auth is still optimising the wrong axis.
