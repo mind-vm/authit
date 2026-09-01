@@ -1,0 +1,4 @@
+# Compiled binaries. `go build` in a main package writes one named after the
+# directory, and `git add -A` will take it: authitctl/authitctl reached a
+# commit that way, 14MB of it.
+/authitctl/authitctl
