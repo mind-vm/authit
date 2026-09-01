@@ -30,10 +30,11 @@
 -- Conventions used here, none of them required:
 --
 --  * IDs are uuid. authit's service packages generate their own IDs with
---    crypto.NewID (a UUIDv4 string) before handing a record to a store, so
---    `DEFAULT gen_random_uuid()` is belt-and-braces for a hand-written store.
---    It IS load-bearing under sqlbstore, whose Table.Create deliberately
---    blanks the ID so the database default assigns one.
+--    crypto.NewID (a UUIDv4 string) before handing a record to a store, and
+--    sqlbstore's Table.Create honours the one it is given, so the column
+--    default is belt-and-braces here rather than the thing that assigns the
+--    key. It still matters: a store handed a record with no ID -- yours, or
+--    a future flow of authit's -- relies on it.
 --  * Token columns hold a hex SHA-256 digest (crypto.HashToken), 64 chars.
 --    Raw tokens are never persisted -- authit hands the raw value to the
 --    caller exactly once and stores only the hash.
@@ -361,6 +362,13 @@ CREATE INDEX team_members_user_id_idx ON team_members (user_id);
 -- status is 'pending' | 'accepted' | 'revoked'. There is deliberately no
 -- 'expired' state: expiry is derived from expires_at at read time and never
 -- written back, so no sweeper job is needed to keep the column honest.
+--
+-- invited_by_id references team_members, NOT users. The name reads like a
+-- user, and this file said users until it was tried: team.CreateInvitation's
+-- parameter is invitedByMemberID and that is what lands in
+-- store.Invitation.InvitedByID, so a foreign key against users can never be
+-- satisfied and every invitation fails. Covered by sqlbstore's
+-- TestInvitationRoundTrip.
 CREATE TABLE team_invitations (
     id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     team_id       uuid        NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -368,7 +376,7 @@ CREATE TABLE team_invitations (
     token_hash    text        NOT NULL UNIQUE,
     role          text        NOT NULL,
     status        text        NOT NULL DEFAULT 'pending',
-    invited_by_id uuid        NOT NULL REFERENCES users(id),
+    invited_by_id uuid        NOT NULL REFERENCES team_members(id) ON DELETE CASCADE,
     expires_at    timestamptz NOT NULL,
     accepted_at   timestamptz,
     created_at    timestamptz NOT NULL DEFAULT now(),

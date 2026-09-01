@@ -349,13 +349,14 @@ The suite runs against `memstore` on every `go test ./...`, and against `sqlbsto
 authit ships no DDL and no migrations — every package depends only on the `store` interfaces, and your schema is yours. But the required table set shouldn't have to be reverse-engineered from struct definitions one type at a time, so there's a reference:
 
 - **[`schema.sql`](schema.sql)** — a complete, non-binding Postgres table set for all fifteen tables behind every `store` interface, annotated at the places where the columns aren't guessable from the Go types. Rename anything; nothing reads this file.
-- **[`sqlbstore/example_test.go`](sqlbstore/example_test.go)** — that same schema wired end to end through `sqlbstore`: a row type and a filled-in `Table[R, T]` for every store in `user.Stores`, ending in a working `user.Service`. It applies `schema.sql` and runs the real flows over it, so the reference schema is checked by the test suite rather than merely asserted.
+- **[`sqlbstore/example_test.go`](sqlbstore/example_test.go)** — that same schema wired end to end through `sqlbstore`: a row type and a filled-in `Table[R, T]` for every store in `user.Stores` and `team.Stores`, ending in a working `user.Service` and `team.Service`. It applies `schema.sql` and runs the real flows over it, so the reference schema is checked by the test suite rather than merely asserted. The team plane is covered because it once was not: `team_invitations.invited_by_id` referenced `users` while the value written to it is a *member* id, so every invitation failed against the reference schema and nothing said so.
 
-Three things `store/*.go` will not tell you, and the reason the reference exists:
+Four things `store/*.go` will not tell you, and the reason the reference exists:
 
 - `LockoutStore` needs **two** tables, backing two different concepts. The attempts table backs the *temporary* lockout, which authit derives by counting recent failures rather than storing — so it lifts on its own, with nothing to unlock. The second table is the set of *administratively* locked accounts; it has no authit type at all, so nothing in `store/user.go` hints it exists, and nothing inside authit writes to it — `LockAccount`/`UnlockAccount` are there for your own admin surface.
 - `store.TOTPSettings` does not use the column names you'd guess: the fields are `Enabled`, `VerifiedAt`, `RecoveryCodeHashes` and `RecoveryCodesUsed` — not `confirmed` and `backup_codes`.
 - `RecoveryCodeHashes` is a `[]string` with no obvious storage. `text[]`, a join table and JSON are all fine; the choice is silently yours and it changes your adapter.
+- `team_invitations.invited_by_id` holds a **member** id, not a user id — `team.CreateInvitation`'s parameter is `invitedByMemberID`. The column name reads like a user, and pointing the foreign key there makes every invitation fail.
 
 ## What's deliberately not included
 
