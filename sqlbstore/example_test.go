@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	authitjwt "github.com/mind-vm/authit/jwt"
+	"github.com/mind-vm/authit/sqlbstore"
 	"github.com/mind-vm/authit/sqlbstore/refschema"
 	"github.com/mind-vm/authit/store"
 	"github.com/mind-vm/authit/team"
@@ -356,7 +357,7 @@ func TestExampleTeamStoresSatisfyTeamService(t *testing.T) {
 // merely asserted — which is how invited_by_id came to point at the wrong
 // table and stay there.
 func TestExampleTeamStoresAgainstReferenceSchema(t *testing.T) {
-	db := referenceSchemaPool(t)
+	db, _ := referenceSchemaPool(t)
 	ctx := context.Background()
 
 	userSvc, err := user.NewService(exampleUserStores(db), exampleSigner(t), nil, user.Config{})
