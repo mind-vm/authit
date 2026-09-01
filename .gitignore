@@ -2,3 +2,7 @@
 # directory, and `git add -A` will take it: authitctl/authitctl reached a
 # commit that way, 14MB of it.
 /authitctl/authitctl
+
+# macOS Finder metadata. Written into any directory Finder has opened, so it
+# turns up far from anything anyone edited.
+.DS_Store
