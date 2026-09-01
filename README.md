@@ -565,9 +565,35 @@ Leaving the field nil disables the control rather than breaking, the same shape 
 
 ## Status
 
-Early scaffold. Core flows are implemented and tested (see `go test ./...`), but this has not yet been used in a production app.
+**Not yet used in production.** Everything below is what can honestly be said instead of that.
 
-Known gaps to weigh before production use: `team`, `superuser`, `pat` and `device` have no lifecycle hooks (only `user` does); and linking a provider to an already-authenticated user has no route group — it is a differently shaped ceremony that must carry the caller's identity through it, and getting that wrong is an account takeover. See [docs/comparison.md](docs/comparison.md) for the full list and the plan.
+### What is verified, and how
+
+`go build ./... && go vet ./... && go test ./... -race` is clean across all four modules. That is table stakes; the part worth stating is which storage implementations have run against a real database.
+
+`storetest` is a conformance suite that both store implementations are held to. `memstore` runs all **18** ports on every `go test`. The reference Postgres binding ([`sqlbstore/refschema`](sqlbstore/refschema)) runs **10** of them against Postgres 18 under `-race`:
+
+> users, refresh tokens, password resets, email verifications, TOTP, pending two-factor sessions, lockouts, superusers, superuser refresh tokens, WebAuthn challenges.
+
+The remaining **8 — accounts (OIDC), devices, email-login tokens, teams, members, invitations, personal access tokens, and WebAuthn credentials — have no reference binding and are verified only against the in-memory fake.** Treat them as the least-tested part of the library.
+
+That distinction is not pedantry. On this branch the fake and the database disagreed three times, each time in the database's favour: a `ToRow` that dropped a caller's timestamp and silently restored a permanent lockout; a malformed id that produced 500 instead of 404 on every by-id route; and a non-atomic read-then-delete that `memstore` let through as a rare race (2 failures in 32) while Postgres failed it every single time (32 in 32). **A green in-memory run is weak evidence.** Set `MYBRAIN_DATABASE_URL` and the Postgres suites stop skipping.
+
+### What review found
+
+Three independent passes over this work — one security, two code review — found **six** issues, all fixed and written up as S4.1–S4.6 in [docs/comparison.md](docs/comparison.md). The largest was a passkey account takeover. Two were found by code review *after* the security pass had signed off, which is the honest argument for the second pair of eyes rather than the first.
+
+### Known gaps
+
+- **Lifecycle hooks are `user`-plane only.** `team`, `superuser`, `pat` and `device` have none.
+- **No route for linking a provider to an already-authenticated user.** Deliberate: it is a differently shaped ceremony that must carry the caller's identity through it, and getting it wrong is an account takeover. `oidc.Service.Link` is there for a host that wires it.
+- **No known-user (second-factor) passkey ceremony over HTTP.** It needs the half-authenticated state only the host holds; `passkey.BeginLogin`/`FinishLogin` are what it calls.
+- **Postgres only.** No SQLite or MySQL adapter, DDL, or conformance run — which is why `authitctl schema print` refuses those dialects rather than guessing.
+- **`PendingTwoFactorStore`'s single-use property depends on the optional `TxRunner`.** Leave `Tx` nil and two concurrent requests can spend one pending-2FA token. The WebAuthn challenge store was given an atomic `Consume` for exactly this reason; this port has not been.
+- **The OpenAPI documents' schemas are unverified.** A test checks every path and method against the routes actually registered, in both directions. Nothing checks that a described body still matches its Go struct.
+- No SAML. No FIDO Metadata Service attestation verification.
+
+[docs/comparison.md](docs/comparison.md) carries the full plan, what was built for each item, and the decisions that changed along the way.
 
 ## License
 

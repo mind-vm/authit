@@ -1063,6 +1063,16 @@ documentation.
 
 
 
+**T3.3 — Fill in the README's status.** ✅ *Done*, and the caveats it names are not the ones this
+entry expected, because those were fixed by Tier 0. The section now states what is *verified* rather
+than how mature the library feels: which 10 of the 18 store ports have run against Postgres and which
+8 have only ever run against the in-memory fake, that three review passes found six issues with two
+of them arriving after the security pass signed off, and that `PendingTwoFactorStore` still depends
+on the optional `TxRunner` for its single-use property. "Early scaffold" was replaced because it is
+an adjective where the reader needs a list.
+
+Original text follows.
+
 **T3.3 — Fill in the README's status.** "Early scaffold… not yet used in a production app" plus the
 Tier 0 items above is an accurate combination, but the README should name the specific caveats
 (permanent lockout, no password policy, HS256-only) rather than leaving them to be discovered.
