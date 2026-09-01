@@ -2,6 +2,9 @@
 # directory, and `git add -A` will take it: authitctl/authitctl reached a
 # commit that way, 14MB of it.
 /authitctl/authitctl
+# Same trap one directory up: `go build ./cmd/example` run from authhandlers
+# names the binary after the package dir but drops it in the working one.
+/authhandlers/example
 
 # macOS Finder metadata. Written into any directory Finder has opened, so it
 # turns up far from anything anyone edited.
