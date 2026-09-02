@@ -1,3 +1,11 @@
+> **Archived.** Development continues in `mind-vm/platform`, where this library
+> lives as `auth/`. This repository is read-only and its history is preserved
+> there.
+>
+> Everything released here — up to and including **v0.3.0** — stays MIT and
+> remains forkable; that is not retracted. New versions come from the platform
+> module, which is private (platform ADR-0001).
+
 # authit
 
 A reusable Go library for user authentication, superuser (operator) authentication, and team/organization-based auth — with no assumption about which database you use.
