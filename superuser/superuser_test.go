@@ -53,6 +53,28 @@ func TestBootstrapOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestCreateFromShellAfterBootstrap(t *testing.T) {
+	svc := newTestService(t)
+	ctx := t.Context()
+	if _, err := svc.Bootstrap(ctx, "root@example.com", "s3cret-passphrase!!", "Root"); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	su, err := svc.CreateFromShell(ctx, "Second@Example.com", "another-passphrase!!", "Second")
+	if err != nil {
+		t.Fatalf("CreateFromShell: %v", err)
+	}
+	if su.CreatedBy != nil {
+		t.Fatalf("CreatedBy = %q, want nil: nobody signed in created it", *su.CreatedBy)
+	}
+	if _, err := svc.Authenticate(ctx, "second@example.com", "another-passphrase!!", "ua", "ip"); err != nil {
+		t.Fatalf("Authenticate as the new superuser: %v", err)
+	}
+	if _, err := svc.CreateFromShell(ctx, "second@example.com", "another-passphrase!!", "Again"); err == nil {
+		t.Fatal("a second account on the same address was created")
+	}
+}
+
 func TestAuthenticateAndRefresh(t *testing.T) {
 	svc := newTestService(t)
 	ctx := t.Context()
@@ -64,7 +86,7 @@ func TestAuthenticateAndRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	claims, err := svc.Verify(tokens.AccessToken)
+	claims, err := svc.Verify(tokens.Tokens.AccessToken)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -72,14 +94,14 @@ func TestAuthenticateAndRefresh(t *testing.T) {
 		t.Fatal("expected superuser audience on issued token")
 	}
 
-	refreshed, err := svc.Refresh(ctx, tokens.RefreshToken, "ua", "ip")
+	refreshed, err := svc.Refresh(ctx, tokens.Tokens.RefreshToken, "ua", "ip")
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if refreshed.RefreshToken == tokens.RefreshToken {
+	if refreshed.RefreshToken == tokens.Tokens.RefreshToken {
 		t.Fatal("expected refresh to rotate the token")
 	}
-	if _, err := svc.Refresh(ctx, tokens.RefreshToken, "ua", "ip"); !errors.Is(err, superuser.ErrInvalidToken) {
+	if _, err := svc.Refresh(ctx, tokens.Tokens.RefreshToken, "ua", "ip"); !errors.Is(err, superuser.ErrInvalidToken) {
 		t.Fatalf("expected ErrInvalidToken for rotated-out token, got %v", err)
 	}
 
@@ -280,16 +302,16 @@ func TestSuperuserRefreshTokenReuseRevokesTheFamily(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	rotated, err := svc.Refresh(ctx, first.RefreshToken, "ua", "ip")
+	rotated, err := svc.Refresh(ctx, first.Tokens.RefreshToken, "ua", "ip")
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 
 	// Replay of the spent token.
-	if _, err := svc.Refresh(ctx, first.RefreshToken, "ua", "attacker-ip"); !errors.Is(err, superuser.ErrInvalidToken) {
+	if _, err := svc.Refresh(ctx, first.Tokens.RefreshToken, "ua", "attacker-ip"); !errors.Is(err, superuser.ErrInvalidToken) {
 		t.Fatalf("expected ErrInvalidToken, got %v", err)
 	}
-	for name, tok := range map[string]string{"rotated": rotated.RefreshToken, "other session": other.RefreshToken} {
+	for name, tok := range map[string]string{"rotated": rotated.RefreshToken, "other session": other.Tokens.RefreshToken} {
 		if _, err := svc.Refresh(ctx, tok, "ua", "ip"); !errors.Is(err, superuser.ErrInvalidToken) {
 			t.Fatalf("%s token should have been revoked, got %v", name, err)
 		}

@@ -414,7 +414,7 @@ func RunEmailLoginStore(t *testing.T, newStore func(*testing.T) store.EmailLogin
 		)
 		s := newStore(t)
 		for round := range rounds {
-			rowID := fmt.Sprintf("%s-%d", id(51), round)
+			rowID := id(round)
 			requireNoError(t, "create", s.CreateEmailLoginToken(ctx(),
 				mk(rowID, "a@example.com", fmt.Sprintf("h-%d", round), store.EmailLoginLink, time.Hour)))
 
@@ -460,7 +460,7 @@ func RunEmailLoginStore(t *testing.T, newStore func(*testing.T) store.EmailLogin
 		)
 		s := newStore(t)
 		for round := range rounds {
-			rowID := fmt.Sprintf("%s-%d", id(51), round)
+			rowID := id(round)
 			email := fmt.Sprintf("a%d@example.com", round)
 			requireNoError(t, "create", s.CreateEmailLoginToken(ctx(),
 				mk(rowID, email, fmt.Sprintf("h-%d", round), store.EmailLoginCode, time.Hour)))

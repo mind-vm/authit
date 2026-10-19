@@ -52,4 +52,22 @@ type SuperuserRefreshTokenStore interface {
 	GetSuperuserRefreshTokenByHash(ctx context.Context, hash string) (*SuperuserRefreshToken, error)
 	RevokeSuperuserRefreshToken(ctx context.Context, id string) error
 	RevokeAllSuperuserRefreshTokens(ctx context.Context, superuserID string) error
+	// ListActiveSuperuserRefreshTokens returns the unrevoked, unexpired
+	// tokens for one operator, oldest first: their sessions.
+	ListActiveSuperuserRefreshTokens(ctx context.Context, superuserID string) ([]*SuperuserRefreshToken, error)
+}
+
+// SuperuserTwoFactorStore persists an operator's TOTP enrollment and the
+// pending sessions between a correct password and a correct code. It reuses
+// the user plane's row types, with UserID carrying the superuser id, but its
+// own tables, for the reason SuperuserRefreshToken has its own.
+type SuperuserTwoFactorStore interface {
+	CreateSuperuserTOTPSettings(ctx context.Context, t *TOTPSettings) error
+	GetSuperuserTOTPSettings(ctx context.Context, superuserID string) (*TOTPSettings, error)
+	UpdateSuperuserTOTPSettings(ctx context.Context, t *TOTPSettings) error
+	DeleteSuperuserTOTPSettings(ctx context.Context, superuserID string) error
+
+	CreateSuperuserPendingTwoFactorSession(ctx context.Context, p *PendingTwoFactorSession) error
+	GetSuperuserPendingTwoFactorSessionByHash(ctx context.Context, hash string) (*PendingTwoFactorSession, error)
+	DeleteSuperuserPendingTwoFactorSession(ctx context.Context, id string) error
 }

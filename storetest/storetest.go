@@ -104,6 +104,7 @@ type Stores struct {
 	Devices            func(*testing.T) store.DeviceAuthorizationStore
 	Superusers         func(*testing.T) store.SuperuserStore
 	SuperuserTokens    func(*testing.T) store.SuperuserRefreshTokenStore
+	SuperuserTwoFactor func(*testing.T) store.SuperuserTwoFactorStore
 	Accounts           func(*testing.T) store.AccountStore
 	WebAuthn           func(*testing.T) store.WebAuthnCredentialStore
 	EmailLogins        func(*testing.T) store.EmailLoginStore
@@ -154,6 +155,9 @@ func RunAll(t *testing.T, s Stores) {
 	}
 	if s.SuperuserTokens != nil {
 		t.Run("SuperuserRefreshTokenStore", func(t *testing.T) { RunSuperuserRefreshTokenStore(t, s.SuperuserTokens, s.Fixtures) })
+	}
+	if s.SuperuserTwoFactor != nil {
+		t.Run("SuperuserTwoFactorStore", func(t *testing.T) { RunSuperuserTwoFactorStore(t, s.SuperuserTwoFactor, s.Fixtures) })
 	}
 	if s.Accounts != nil {
 		t.Run("AccountStore", func(t *testing.T) { RunAccountStore(t, s.Accounts, s.Fixtures) })

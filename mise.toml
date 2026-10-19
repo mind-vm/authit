@@ -1,0 +1,4 @@
+[tools]
+go = "1.26"
+# Exact: `sqlc diff` fails when the generator's version changes the output.
+sqlc = "1.31.1"

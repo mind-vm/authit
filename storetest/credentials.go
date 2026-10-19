@@ -330,6 +330,68 @@ func RunSuperuserRefreshTokenStore(t *testing.T, newStore func(*testing.T) store
 			t.Fatal("another operator's token must not be revoked")
 		}
 	})
+
+	t.Run("ListActive is one operator's live tokens", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureSuperuser(t, id(81), id(82))
+		expired := mk(id(33), id(81), "h3")
+		expired.ExpiresAt = time.Now().Add(-time.Minute)
+		for _, rt := range []*store.SuperuserRefreshToken{mk(id(31), id(81), "h1"), mk(id(32), id(81), "h2"), expired, mk(id(34), id(82), "h4")} {
+			requireNoError(t, "create", s.CreateSuperuserRefreshToken(ctx(), rt))
+		}
+		requireNoError(t, "revoke", s.RevokeSuperuserRefreshToken(ctx(), id(32)))
+
+		got, err := s.ListActiveSuperuserRefreshTokens(ctx(), id(81))
+		requireNoError(t, "list", err)
+		if len(got) != 1 || got[0].ID != id(31) {
+			t.Fatalf("ListActiveSuperuserRefreshTokens = %d rows, want only the live one", len(got))
+		}
+	})
+}
+
+// RunSuperuserTwoFactorStore checks store.SuperuserTwoFactorStore.
+func RunSuperuserTwoFactorStore(t *testing.T, newStore func(*testing.T) store.SuperuserTwoFactorStore, fx Fixtures) {
+	t.Run("missing rows report ErrNotFound", func(t *testing.T) {
+		s := newStore(t)
+		_, err := s.GetSuperuserTOTPSettings(ctx(), id(81))
+		requireNotFound(t, "GetSuperuserTOTPSettings", err)
+		_, err = s.GetSuperuserPendingTwoFactorSessionByHash(ctx(), "nope")
+		requireNotFound(t, "GetSuperuserPendingTwoFactorSessionByHash", err)
+	})
+
+	t.Run("settings round-trip and delete", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureSuperuser(t, id(81))
+		now := time.Now()
+		ts := &store.TOTPSettings{ID: id(41), UserID: id(81), SecretEncrypted: []byte("sealed"), CreatedAt: now, UpdatedAt: now}
+		requireNoError(t, "create", s.CreateSuperuserTOTPSettings(ctx(), ts))
+		ts.Enabled, ts.VerifiedAt, ts.RecoveryCodeHashes = true, &now, []string{"a", "b"}
+		requireNoError(t, "update", s.UpdateSuperuserTOTPSettings(ctx(), ts))
+
+		got, err := s.GetSuperuserTOTPSettings(ctx(), id(81))
+		requireNoError(t, "get", err)
+		if !got.Enabled || len(got.RecoveryCodeHashes) != 2 || string(got.SecretEncrypted) != "sealed" {
+			t.Fatalf("settings did not round-trip: %+v", got)
+		}
+		requireNoError(t, "delete", s.DeleteSuperuserTOTPSettings(ctx(), id(81)))
+		_, err = s.GetSuperuserTOTPSettings(ctx(), id(81))
+		requireNotFound(t, "get after delete", err)
+	})
+
+	t.Run("pending sessions round-trip and delete", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureSuperuser(t, id(81))
+		p := &store.PendingTwoFactorSession{ID: id(51), UserID: id(81), TokenHash: "p1", ExpiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now()}
+		requireNoError(t, "create", s.CreateSuperuserPendingTwoFactorSession(ctx(), p))
+		got, err := s.GetSuperuserPendingTwoFactorSessionByHash(ctx(), "p1")
+		requireNoError(t, "get", err)
+		if got.UserID != id(81) {
+			t.Fatalf("pending session names %q, want %q", got.UserID, id(81))
+		}
+		requireNoError(t, "delete", s.DeleteSuperuserPendingTwoFactorSession(ctx(), p.ID))
+		_, err = s.GetSuperuserPendingTwoFactorSessionByHash(ctx(), "p1")
+		requireNotFound(t, "get after delete", err)
+	})
 }
 
 // RunAccountStore checks store.AccountStore.

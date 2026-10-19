@@ -25,14 +25,20 @@ func (s *Service) Impersonate(ctx context.Context, superuserID, targetUserID, ta
 	now := time.Now()
 	claims := authitjwt.Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   targetUserID,
+			Subject: targetUserID,
+			// The signer's own issuer, because "an ordinary user-plane
+			// token" has to be ordinary all the way: a host whose
+			// verifier checks iss -- the usual shape when one signer
+			// serves several deployments -- refuses a token without one,
+			// and the impersonation would flow through no route at all.
+			Issuer:    s.impSigner.Defaults().Issuer,
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.cfg.ImpersonationTTL)),
 			IssuedAt:  jwt.NewNumericDate(now),
 		},
 		Email:   targetUserEmail,
 		ActorID: superuserID,
 	}
-	token, err := s.signer.Sign(&claims)
+	token, err := s.impSigner.Sign(&claims)
 	if err != nil {
 		return "", err
 	}

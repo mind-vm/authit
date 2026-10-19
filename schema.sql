@@ -421,6 +421,28 @@ CREATE TABLE superuser_refresh_tokens (
 CREATE INDEX superuser_refresh_tokens_superuser_id_idx
     ON superuser_refresh_tokens (superuser_id);
 
+-- store.SuperuserTwoFactorStore. The user plane's row shapes in tables of
+-- their own, for the reason superuser_refresh_tokens is its own.
+CREATE TABLE superuser_totp_settings (
+    id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    superuser_id         uuid        NOT NULL UNIQUE REFERENCES superusers(id) ON DELETE CASCADE,
+    secret_encrypted     bytea       NOT NULL,
+    enabled              boolean     NOT NULL DEFAULT false,
+    verified_at          timestamptz,
+    recovery_code_hashes text[]      NOT NULL DEFAULT '{}',
+    recovery_codes_used  integer     NOT NULL DEFAULT 0,
+    created_at           timestamptz NOT NULL DEFAULT now(),
+    updated_at           timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE superuser_pending_two_factor_sessions (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    superuser_id uuid        NOT NULL REFERENCES superusers(id) ON DELETE CASCADE,
+    token_hash   text        NOT NULL UNIQUE,
+    expires_at   timestamptz NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+
 -- ---------------------------------------------------------------------------
 -- CLI / non-interactive auth -- pat.Stores and device.Stores
 -- ---------------------------------------------------------------------------

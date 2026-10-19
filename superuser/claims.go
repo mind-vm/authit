@@ -17,7 +17,8 @@ import (
 const DefaultAudience = "authit-superuser"
 
 // Claims is the admin-plane access token claim set. Subject carries the
-// superuser ID. Impersonation does NOT use this type — Impersonate mints an
+// superuser ID; ID (jti) carries the session — the refresh token's row id —
+// so a request can tell which of an operator's sessions it is. Impersonation does NOT use this type — Impersonate mints an
 // ordinary jwt.Claims (user-plane) token instead, so it flows through
 // existing user routes unchanged; see jwt.Claims.ActorID.
 type Claims struct {

@@ -53,6 +53,8 @@ const (
 	EventUserEmailVerified     EventType = "user.email.verified"
 	EventUserTwoFactorEnabled  EventType = "user.twofactor.enabled"
 	EventUserTwoFactorDisabled EventType = "user.twofactor.disabled"
+	// EventUserUnlocked is an operator lifting an account's lockout.
+	EventUserUnlocked EventType = "user.unlocked"
 	// EventAccountLinked and EventAccountUnlinked record an external
 	// identity being attached to or detached from a user. Linking is a
 	// credential grant -- afterwards, that provider can sign this account
@@ -87,6 +89,13 @@ const (
 	EventSuperuserTokenReuse   EventType = "superuser.token.reuse_detected"
 	EventSuperuserDeactivated  EventType = "superuser.deactivated"
 	EventSuperuserImpersonated EventType = "superuser.impersonated"
+	// An operator's own account: the verbs a signed-in operator runs on
+	// itself, each as security-relevant as a sign-in.
+	EventSuperuserPasswordChanged        EventType = "superuser.password.changed"
+	EventSuperuserTwoFactorEnabled       EventType = "superuser.twofactor.enabled"
+	EventSuperuserTwoFactorDisabled      EventType = "superuser.twofactor.disabled"
+	EventSuperuserBackupCodesRegenerated EventType = "superuser.twofactor.backup_codes_regenerated"
+	EventSuperuserSessionRevoked         EventType = "superuser.session.revoked"
 
 	EventTeamCreated             EventType = "team.created"
 	EventTeamMemberRoleChanged   EventType = "team.member.role_changed"

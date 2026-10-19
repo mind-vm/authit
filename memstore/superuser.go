@@ -138,3 +138,57 @@ func (s *SuperuserRefreshTokenStore) RevokeAllSuperuserRefreshTokens(_ context.C
 	}
 	return nil
 }
+
+func (s *SuperuserRefreshTokenStore) ListActiveSuperuserRefreshTokens(_ context.Context, superuserID string) ([]*store.SuperuserRefreshToken, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := nowFunc()
+	out := []*store.SuperuserRefreshToken{}
+	for _, id := range s.bySuID[superuserID] {
+		if t := s.byID[id]; t.RevokedAt == nil && now.Before(t.ExpiresAt) {
+			cp := *t
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+// SuperuserTwoFactorStore is an in-memory store.SuperuserTwoFactorStore.
+// The rows are the user plane's shapes, so it delegates to those stores; the
+// separate instance is what keeps the two planes' rows apart.
+type SuperuserTwoFactorStore struct {
+	totp    *TOTPStore
+	pending *PendingTwoFactorStore
+}
+
+func NewSuperuserTwoFactorStore() *SuperuserTwoFactorStore {
+	return &SuperuserTwoFactorStore{totp: NewTOTPStore(), pending: NewPendingTwoFactorStore()}
+}
+
+func (s *SuperuserTwoFactorStore) CreateSuperuserTOTPSettings(ctx context.Context, t *store.TOTPSettings) error {
+	return s.totp.CreateTOTPSettings(ctx, t)
+}
+
+func (s *SuperuserTwoFactorStore) GetSuperuserTOTPSettings(ctx context.Context, superuserID string) (*store.TOTPSettings, error) {
+	return s.totp.GetTOTPSettingsByUserID(ctx, superuserID)
+}
+
+func (s *SuperuserTwoFactorStore) UpdateSuperuserTOTPSettings(ctx context.Context, t *store.TOTPSettings) error {
+	return s.totp.UpdateTOTPSettings(ctx, t)
+}
+
+func (s *SuperuserTwoFactorStore) DeleteSuperuserTOTPSettings(ctx context.Context, superuserID string) error {
+	return s.totp.DeleteTOTPSettings(ctx, superuserID)
+}
+
+func (s *SuperuserTwoFactorStore) CreateSuperuserPendingTwoFactorSession(ctx context.Context, p *store.PendingTwoFactorSession) error {
+	return s.pending.CreatePendingTwoFactorSession(ctx, p)
+}
+
+func (s *SuperuserTwoFactorStore) GetSuperuserPendingTwoFactorSessionByHash(ctx context.Context, hash string) (*store.PendingTwoFactorSession, error) {
+	return s.pending.GetPendingTwoFactorSessionByHash(ctx, hash)
+}
+
+func (s *SuperuserTwoFactorStore) DeleteSuperuserPendingTwoFactorSession(ctx context.Context, id string) error {
+	return s.pending.DeletePendingTwoFactorSession(ctx, id)
+}

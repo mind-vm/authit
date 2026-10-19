@@ -1,16 +1,15 @@
-> **Archived.** Development continues in `mind-vm/platform`, where this library
-> lives as `auth/`. This repository is read-only and its history is preserved
-> there.
->
-> Everything released here — up to and including **v0.3.0** — stays MIT and
-> remains forkable; that is not retracted. New versions come from the platform
-> module, which is private (platform ADR-0001).
-
 # authit
 
 A reusable Go library for user authentication, superuser (operator) authentication, and team/organization-based auth — with no assumption about which database you use.
 
 authit was designed by studying two existing implementations (a full-featured but Postgres-locked product auth system, and a modular monorepo's shared auth packages) and combining the best parts: the modular package split of the latter, the feature completeness of the former, plus a storage-port layer neither of them had.
+
+```sh
+go get github.com/mind-vm/authit@latest
+```
+
+`make ci` runs what CI runs (gofmt, vet, `sqlc diff`, and the tests, which need
+Postgres at `PGTEST_DSN`). Tool versions are pinned in `mise.toml`.
 
 ## Design
 
@@ -608,4 +607,4 @@ Three independent passes over this work — one security, two code review — fo
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Proprietary — see [LICENSE](../LICENSE). All rights reserved.

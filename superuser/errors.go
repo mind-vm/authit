@@ -24,4 +24,10 @@ var (
 	ErrInvalidToken         = errors.New("authit/superuser: invalid or expired token")
 	ErrCannotDeactivateSelf = errors.New("authit/superuser: cannot deactivate your own account")
 	ErrAlreadyBootstrapped  = errors.New("authit/superuser: at least one superuser already exists")
+
+	ErrTwoFactorUnavailable = errors.New("authit/superuser: this deployment has no second-factor store")
+	ErrTwoFactorEnabled     = errors.New("authit/superuser: a second factor is already enabled")
+	ErrTwoFactorNotEnabled  = errors.New("authit/superuser: no second factor is enabled")
+	ErrInvalidTwoFactor     = errors.New("authit/superuser: invalid second-factor code")
+	ErrSessionNotFound      = errors.New("authit/superuser: no such session")
 )

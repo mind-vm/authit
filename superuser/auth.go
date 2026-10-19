@@ -14,7 +14,10 @@ import (
 
 // Authenticate verifies email/password against the superuser table and
 // issues a token pair scoped to this plane's audience.
-func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, ipAddress string) (TokenPair, error) {
+//
+// An operator with a second factor gets a LoginResult carrying only a
+// TwoFactorToken; VerifyTwoFactorLogin completes the sign-in.
+func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, ipAddress string) (LoginResult, error) {
 	// Normalised once so the account lookup and the email-keyed
 	// failed-login counter agree; see store.NormalizeEmail.
 	email = store.NormalizeEmail(email)
@@ -25,21 +28,21 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 			Email: email, UserAgent: userAgent, IPAddress: ipAddress,
 			Metadata: map[string]any{"reason": "rate_limited"},
 		})
-		return TokenPair{}, err
+		return LoginResult{}, err
 	}
 
 	// Checked before the account lookup, and keyed by email, so an unknown
 	// address and a throttled one behave identically.
 	throttled, err := s.throttled(ctx, email)
 	if err != nil {
-		return TokenPair{}, err
+		return LoginResult{}, err
 	}
 	if throttled {
 		s.audit.Log(ctx, audit.Event{
 			Type: audit.EventSuperuserLoginLocked, Result: audit.ResultDenied,
 			Email: email, UserAgent: userAgent, IPAddress: ipAddress,
 		})
-		return TokenPair{}, ErrAccountLocked
+		return LoginResult{}, ErrAccountLocked
 	}
 
 	su, err := s.stores.Superusers.GetSuperuserByEmail(ctx, email)
@@ -50,21 +53,21 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 				Type: audit.EventSuperuserLoginFailed, Result: audit.ResultFailure,
 				Email: email, UserAgent: userAgent, IPAddress: ipAddress,
 			})
-			return TokenPair{}, ErrInvalidCredentials
+			return LoginResult{}, ErrInvalidCredentials
 		}
-		return TokenPair{}, err
+		return LoginResult{}, err
 	}
 	if s.stores.Lockouts != nil {
 		locked, err := s.stores.Lockouts.IsAccountLocked(ctx, su.ID)
 		if err != nil {
-			return TokenPair{}, err
+			return LoginResult{}, err
 		}
 		if locked {
 			s.audit.Log(ctx, audit.Event{
 				Type: audit.EventSuperuserLoginLocked, Result: audit.ResultDenied,
 				ActorID: su.ID, Email: email, UserAgent: userAgent, IPAddress: ipAddress,
 			})
-			return TokenPair{}, ErrAccountLocked
+			return LoginResult{}, ErrAccountLocked
 		}
 	}
 	if !s.cfg.PasswordHasher.Verify(password, su.PasswordHash) {
@@ -73,7 +76,7 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 			Type: audit.EventSuperuserLoginFailed, Result: audit.ResultFailure,
 			ActorID: su.ID, Email: email, UserAgent: userAgent, IPAddress: ipAddress,
 		})
-		return TokenPair{}, ErrInvalidCredentials
+		return LoginResult{}, ErrInvalidCredentials
 	}
 	// Correct password: the one point the plaintext is available to upgrade
 	// a hash written by an older algorithm. Best-effort -- the stored hash
@@ -92,7 +95,15 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 			ActorID: su.ID, Email: email, UserAgent: userAgent, IPAddress: ipAddress,
 			Metadata: map[string]any{"reason": "inactive"},
 		})
-		return TokenPair{}, ErrInactive
+		return LoginResult{}, ErrInactive
+	}
+	// A second factor stops here with the failure counter left standing, so
+	// guesses at the code share the password's budget; see
+	// VerifyTwoFactorLogin.
+	if pending, err := s.beginTwoFactorLogin(ctx, su.ID); err != nil {
+		return LoginResult{}, err
+	} else if pending != "" {
+		return LoginResult{TwoFactorToken: pending}, nil
 	}
 	if s.stores.Lockouts != nil {
 		_ = s.stores.Lockouts.ClearFailedLoginAttempts(ctx, email)
@@ -104,13 +115,13 @@ func (s *Service) Authenticate(ctx context.Context, email, password, userAgent, 
 
 	tokens, err := s.issueTokenPair(ctx, su.ID, su.Email, userAgent, ipAddress)
 	if err != nil {
-		return TokenPair{}, err
+		return LoginResult{}, err
 	}
 	s.audit.Log(ctx, audit.Event{
 		Type: audit.EventSuperuserLoginSucceeded, Result: audit.ResultSuccess,
 		ActorID: su.ID, Email: su.Email, UserAgent: userAgent, IPAddress: ipAddress,
 	})
-	return tokens, nil
+	return LoginResult{Tokens: &tokens}, nil
 }
 
 // throttled reports whether email is in temporary lockout:
@@ -243,6 +254,7 @@ func (s *Service) issueTokenPair(ctx context.Context, superuserID, email, userAg
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   superuserID,
+			ID:        id,
 			Audience:  jwt.ClaimStrings{s.cfg.Audience},
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(now),

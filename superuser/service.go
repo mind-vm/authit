@@ -21,6 +21,9 @@ type Stores struct {
 	// Tx is optional. Supplying it makes Refresh's rotation atomic; nil
 	// leaves it as two independent writes. See store.TxRunner.
 	Tx store.TxRunner
+	// TwoFactor is optional; if nil, operators cannot enrol a second factor
+	// and Authenticate never asks for one. Requires Config.TOTPEncryptionKey.
+	TwoFactor store.SuperuserTwoFactorStore
 }
 
 // Config tunes the superuser package's flows. Defaults are intentionally
@@ -54,12 +57,28 @@ type Config struct {
 	// Consider a stricter policy here than on the user plane: these
 	// accounts can impersonate.
 	PasswordValidator authitcrypto.PasswordValidator
+	// ImpersonationSigner signs the user-plane tokens Impersonate mints.
+	// Nil means this plane's own signer, which is right when one key serves
+	// both planes. Set it when the user plane has a key of its own: a token
+	// the user plane cannot verify impersonates nobody.
+	ImpersonationSigner authitjwt.Signer
 	// RateLimiter throttles Authenticate before the password KDF runs.
 	// Nil means ratelimit.Noop. Keys:
 	//
 	//	superuser-login:ip:<ip>        per source address
 	//	superuser-login:email:<email>  per account, normalised
 	RateLimiter ratelimit.Limiter
+	// TOTPEncryptionKey encrypts TOTP secrets at rest; 32 bytes. Required
+	// when Stores.TwoFactor is set.
+	TOTPEncryptionKey []byte
+	// TOTPIssuer names the account in an authenticator app. Defaults to
+	// "authit-superuser".
+	TOTPIssuer string
+	// BackupCodeCount defaults to 10.
+	BackupCodeCount int
+	// PendingTwoFactorTTL is how long an operator has between a correct
+	// password and a correct code. Defaults to 5 minutes.
+	PendingTwoFactorTTL time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -90,6 +109,15 @@ func (c Config) withDefaults() Config {
 	if c.RateLimiter == nil {
 		c.RateLimiter = ratelimit.Noop{}
 	}
+	if c.TOTPIssuer == "" {
+		c.TOTPIssuer = "authit-superuser"
+	}
+	if c.BackupCodeCount <= 0 {
+		c.BackupCodeCount = 10
+	}
+	if c.PendingTwoFactorTTL <= 0 {
+		c.PendingTwoFactorTTL = 5 * time.Minute
+	}
 	return c
 }
 
@@ -100,12 +128,22 @@ type TokenPair struct {
 	ExpiresAt    time.Time
 }
 
+// LoginResult is what Authenticate returns: tokens, or — for an operator
+// with a second factor — the pending token VerifyTwoFactorLogin exchanges
+// for them. Exactly one is set.
+type LoginResult struct {
+	Tokens         *TokenPair
+	TwoFactorToken string
+}
+
 // Service implements the superuser/operator auth plane.
 type Service struct {
 	stores Stores
 	signer authitjwt.Signer
-	audit  audit.Logger
-	cfg    Config
+	// impSigner signs impersonation tokens; see Config.ImpersonationSigner.
+	impSigner authitjwt.Signer
+	audit     audit.Logger
+	cfg       Config
 }
 
 // NewService constructs a Service. signer may be the same jwt.Signer used
@@ -119,11 +157,18 @@ func NewService(stores Stores, signer authitjwt.Signer, cfg Config) (*Service, e
 	if signer == nil {
 		return nil, errors.New("authit/superuser: signer is required")
 	}
+	if stores.TwoFactor != nil && len(cfg.TOTPEncryptionKey) != 32 {
+		return nil, errors.New("authit/superuser: Stores.TwoFactor needs a 32-byte Config.TOTPEncryptionKey")
+	}
 	auditLogger := cfg.AuditLogger
 	if auditLogger == nil {
 		auditLogger = audit.NoopLogger{}
 	}
-	return &Service{stores: stores, signer: signer, audit: auditLogger, cfg: cfg.withDefaults()}, nil
+	impSigner := cfg.ImpersonationSigner
+	if impSigner == nil {
+		impSigner = signer
+	}
+	return &Service{stores: stores, signer: signer, impSigner: impSigner, audit: auditLogger, cfg: cfg.withDefaults()}, nil
 }
 
 // Bootstrap creates the first superuser, and only the first: it fails with
@@ -147,6 +192,13 @@ func (s *Service) Bootstrap(ctx context.Context, email, password, displayName st
 // Bootstrap) can create one.
 func (s *Service) CreateSuperuser(ctx context.Context, email, password, displayName, createdByID string) (store.Superuser, error) {
 	return s.createSuperuser(ctx, email, password, displayName, &createdByID)
+}
+
+// CreateFromShell creates a superuser attributed to nobody, for a command run
+// by whoever holds a shell on the deployment. That access already outranks
+// this plane, so there is no signed-in superuser to name as creator.
+func (s *Service) CreateFromShell(ctx context.Context, email, password, displayName string) (store.Superuser, error) {
+	return s.createSuperuser(ctx, email, password, displayName, nil)
 }
 
 func (s *Service) createSuperuser(ctx context.Context, email, password, displayName string, createdBy *string) (store.Superuser, error) {

@@ -36,6 +36,9 @@ func TestMemstoreConformance(t *testing.T) {
 		SuperuserTokens: func(*testing.T) store.SuperuserRefreshTokenStore {
 			return memstore.NewSuperuserRefreshTokenStore()
 		},
+		SuperuserTwoFactor: func(*testing.T) store.SuperuserTwoFactorStore {
+			return memstore.NewSuperuserTwoFactorStore()
+		},
 		Accounts: func(*testing.T) store.AccountStore { return memstore.NewAccountStore() },
 		WebAuthn: func(*testing.T) store.WebAuthnCredentialStore {
 			return memstore.NewWebAuthnCredentialStore()
