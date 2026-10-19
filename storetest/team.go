@@ -23,6 +23,7 @@ func RunTeamStore(t *testing.T, newStore func(*testing.T) store.TeamStore, fx Fi
 
 	t.Run("create, read by id and slug, update, delete", func(t *testing.T) {
 		s := newStore(t)
+		fx.ensureUser(t, id(1))
 		now := time.Now()
 		tm := &store.Team{ID: id(11), Name: "Acme", Slug: "acme", OwnerID: id(1), CreatedAt: now, UpdatedAt: now}
 		requireNoError(t, "CreateTeam", s.CreateTeam(ctx(), tm))
@@ -52,6 +53,21 @@ func RunTeamStore(t *testing.T, newStore func(*testing.T) store.TeamStore, fx Fi
 		requireNoError(t, "DeleteTeam", s.DeleteTeam(ctx(), tm.ID))
 		_, err = s.GetTeam(ctx(), tm.ID)
 		requireNotFound(t, "GetTeam after delete", err)
+	})
+
+	t.Run("a taken slug is ErrConflict", func(t *testing.T) {
+		// team.CreateTeam checks the slug before it writes, but two
+		// creations racing past that check are stopped only here.
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		now := time.Now()
+		requireNoError(t, "CreateTeam", s.CreateTeam(ctx(),
+			&store.Team{ID: id(11), Name: "Acme", Slug: "acme", OwnerID: id(1), CreatedAt: now, UpdatedAt: now}))
+		err := s.CreateTeam(ctx(),
+			&store.Team{ID: id(12), Name: "Acme 2", Slug: "acme", OwnerID: id(1), CreatedAt: now, UpdatedAt: now})
+		if !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("CreateTeam with a taken slug = %v, want ErrConflict", err)
+		}
 	})
 }
 
@@ -215,6 +231,7 @@ func RunInvitationStore(t *testing.T, newStore func(*testing.T) store.Invitation
 		// it twice.
 		s := newStore(t)
 		fx.ensureTeam(t, id(11))
+		fx.ensureMember(t, id(21), id(11))
 		inv := mk(id(61), id(11), "a@example.com", "h1", store.InvitationPending)
 		requireNoError(t, "CreateInvitation", s.CreateInvitation(ctx(), inv))
 
@@ -231,6 +248,7 @@ func RunInvitationStore(t *testing.T, newStore func(*testing.T) store.Invitation
 	t.Run("accepted state round trips", func(t *testing.T) {
 		s := newStore(t)
 		fx.ensureTeam(t, id(11))
+		fx.ensureMember(t, id(21), id(11))
 		inv := mk(id(61), id(11), "a@example.com", "h1", store.InvitationPending)
 		requireNoError(t, "CreateInvitation", s.CreateInvitation(ctx(), inv))
 		inv.Status = store.InvitationAccepted
@@ -244,9 +262,26 @@ func RunInvitationStore(t *testing.T, newStore func(*testing.T) store.Invitation
 		}
 	})
 
+	t.Run("an invitation without an inviter round trips", func(t *testing.T) {
+		// InvitedByID is optional: team.CreateInvitation passes whatever
+		// member id the host has, which may be none. Empty must come back
+		// empty, not fail the write or read back as something else.
+		s := newStore(t)
+		fx.ensureTeam(t, id(11))
+		inv := mk(id(61), id(11), "a@example.com", "h1", store.InvitationPending)
+		inv.InvitedByID = ""
+		requireNoError(t, "CreateInvitation", s.CreateInvitation(ctx(), inv))
+		got, err := s.GetInvitation(ctx(), id(61))
+		requireNoError(t, "GetInvitation", err)
+		if got.InvitedByID != "" {
+			t.Fatalf("InvitedByID = %q, want empty", got.InvitedByID)
+		}
+	})
+
 	t.Run("listing is scoped to one team", func(t *testing.T) {
 		s := newStore(t)
 		fx.ensureTeam(t, id(11), id(12))
+		fx.ensureMember(t, id(21), id(11))
 		requireNoError(t, "CreateInvitation", s.CreateInvitation(ctx(), mk(id(61), id(11), "a@example.com", "h1", store.InvitationPending)))
 		requireNoError(t, "CreateInvitation", s.CreateInvitation(ctx(), mk(id(62), id(11), "b@example.com", "h2", store.InvitationPending)))
 		requireNoError(t, "CreateInvitation", s.CreateInvitation(ctx(), mk(id(63), id(12), "c@example.com", "h3", store.InvitationPending)))

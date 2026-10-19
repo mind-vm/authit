@@ -48,8 +48,35 @@ func TestConformance(t *testing.T) {
 		}
 	}
 
+	ensureUser := ensure("auth_users")
+	// A fixture team is owned by a fixture user, and a fixture member
+	// belongs to a team, so each creates what it hangs off first.
+	ensureTeam := func(t *testing.T, id string) {
+		t.Helper()
+		ensureUser(t, fixtureOwner)
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		_, err := cur.DB().Exec(`INSERT INTO auth_teams (id, name, slug, owner_id, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`, id, id, "fixture-"+id, fixtureOwner, now, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ensureMember := func(t *testing.T, id, teamID string) {
+		t.Helper()
+		ensureTeam(t, teamID)
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		_, err := cur.DB().Exec(`INSERT INTO auth_team_members (id, team_id, role, created_at, updated_at)
+			VALUES (?, ?, 'member', ?, ?) ON CONFLICT (id) DO NOTHING`, id, teamID, now, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	storetest.RunAll(t, storetest.Stores{
-		Fixtures:           storetest.Fixtures{EnsureUser: ensure("auth_users"), EnsureSuperuser: ensure("auth_superusers")},
+		Fixtures: storetest.Fixtures{
+			EnsureUser: ensureUser, EnsureTeam: ensureTeam, EnsureMember: ensureMember,
+			EnsureSuperuser: ensure("auth_superusers"),
+		},
 		Users:              func(t *testing.T) store.UserStore { return empty(t) },
 		RefreshTokens:      func(t *testing.T) store.RefreshTokenStore { return empty(t) },
 		PasswordResets:     func(t *testing.T) store.PasswordResetStore { return empty(t) },
@@ -64,8 +91,17 @@ func TestConformance(t *testing.T) {
 		Superusers:         func(t *testing.T) store.SuperuserStore { return empty(t) },
 		SuperuserTokens:    func(t *testing.T) store.SuperuserRefreshTokenStore { return empty(t) },
 		SuperuserTwoFactor: func(t *testing.T) store.SuperuserTwoFactorStore { return empty(t) },
+		Teams:              func(t *testing.T) store.TeamStore { return empty(t) },
+		Members:            func(t *testing.T) store.MemberStore { return empty(t) },
+		Invitations:        func(t *testing.T) store.InvitationStore { return empty(t) },
+		PATs:               func(t *testing.T) store.PersonalAccessTokenStore { return empty(t) },
+		Devices:            func(t *testing.T) store.DeviceAuthorizationStore { return empty(t) },
 	})
 }
+
+// fixtureOwner owns the teams the conformance fixtures create; the suite's
+// own ids stop well short of it.
+const fixtureOwner = "00000000-0000-4000-8000-0000000000fe"
 
 // TestRunInTxRollsBack holds the TxRunner contract: a write made with fn's
 // context is undone when fn fails, and the error comes back unchanged.

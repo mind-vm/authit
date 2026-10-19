@@ -28,6 +28,20 @@ type AuthAccountLock struct {
 	LockedAt time.Time
 }
 
+type AuthDeviceAuthorization struct {
+	ID              string
+	DeviceCodeHash  string
+	UserCode        string
+	ClientID        string
+	Scope           string
+	Status          string
+	UserID          *string
+	ExpiresAt       time.Time
+	IntervalSeconds int32
+	LastPolledAt    *time.Time
+	CreatedAt       time.Time
+}
+
 type AuthEmailLoginToken struct {
 	ID        string
 	Email     string
@@ -70,6 +84,18 @@ type AuthPendingTwoFactorSession struct {
 	TokenHash string
 	ExpiresAt time.Time
 	CreatedAt time.Time
+}
+
+type AuthPersonalAccessToken struct {
+	ID         string
+	UserID     string
+	Name       string
+	TokenHash  string
+	Scopes     []string
+	ExpiresAt  *time.Time
+	LastUsedAt *time.Time
+	RevokedAt  *time.Time
+	CreatedAt  time.Time
 }
 
 type AuthRefreshToken struct {
@@ -124,6 +150,41 @@ type AuthSuperuserTotpSetting struct {
 	RecoveryCodesUsed  int32
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+}
+
+type AuthTeam struct {
+	ID        string
+	Name      string
+	Slug      string
+	OwnerID   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type AuthTeamInvitation struct {
+	ID          string
+	TeamID      string
+	Email       string
+	TokenHash   string
+	Role        string
+	Status      string
+	InvitedByID *string
+	ExpiresAt   time.Time
+	AcceptedAt  *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type AuthTeamMember struct {
+	ID          string
+	TeamID      string
+	UserID      *string
+	Role        string
+	DisplayName string
+	Email       string
+	IsActive    bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type AuthTotpSetting struct {

@@ -54,6 +54,9 @@ type Fixtures struct {
 	EnsureUser      func(t *testing.T, userID string)
 	EnsureTeam      func(t *testing.T, teamID string)
 	EnsureSuperuser func(t *testing.T, superuserID string)
+	// EnsureMember creates member memberID in team teamID, for a schema
+	// whose invitations reference the inviting member.
+	EnsureMember func(t *testing.T, memberID, teamID string)
 }
 
 func (f Fixtures) ensureUser(t *testing.T, ids ...string) {
@@ -74,6 +77,14 @@ func (f Fixtures) ensureTeam(t *testing.T, ids ...string) {
 	for _, id := range ids {
 		f.EnsureTeam(t, id)
 	}
+}
+
+func (f Fixtures) ensureMember(t *testing.T, memberID, teamID string) {
+	t.Helper()
+	if f.EnsureMember == nil {
+		return
+	}
+	f.EnsureMember(t, memberID, teamID)
 }
 
 func (f Fixtures) ensureSuperuser(t *testing.T, ids ...string) {
