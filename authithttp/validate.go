@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	jwtlib "github.com/golang-jwt/jwt/v5"
+	"github.com/mind-vm/authit/internal/sentinel"
 	authitjwt "github.com/mind-vm/authit/jwt"
 )
 
@@ -20,7 +21,12 @@ var (
 	// caller that wants to distinguish (say) expiry from forgery can still
 	// check errors.Is(err, jwt.ErrTokenExpired). The caller is
 	// unauthenticated: 401.
-	ErrInvalidToken = errors.New("authit/http: invalid bearer token")
+	//
+	// Every plane's own ErrInvalidToken matches it too -- user, superuser,
+	// pat and emaillogin -- so errors.Is(err, ErrInvalidToken) holds for an
+	// error from user.Service.ValidateSession as much as for one from
+	// Validate, and StatusFor needs no table of other packages' sentinels.
+	ErrInvalidToken = sentinel.InvalidToken
 )
 
 // Validate extracts the request's bearer token and verifies it with v.
@@ -70,8 +76,9 @@ func Validate(v authitjwt.Verifier, r *http.Request) (authitjwt.Claims, error) {
 	return claims, nil
 }
 
-// StatusFor maps an error from Validate to the status a bearer-authenticated
-// endpoint should return: 401 when the request failed to authenticate itself,
+// StatusFor maps an error from Validate, an Authenticator, or any plane's
+// ErrInvalidToken to the status a bearer-authenticated endpoint should
+// return: 401 when the request failed to authenticate itself,
 // 500 when this server could not perform the check. It says nothing about the
 // response body, and returns 200 for a nil error so it can be used
 // unconditionally.

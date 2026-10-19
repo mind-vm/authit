@@ -3,6 +3,7 @@ package emaillogin
 import (
 	"errors"
 
+	"github.com/mind-vm/authit/internal/sentinel"
 	"github.com/mind-vm/authit/ratelimit"
 )
 
@@ -14,7 +15,10 @@ var (
 	// "expired" from "wrong" tells an attacker whether the code they tried
 	// was ever real, and distinguishing "no such token" from "no such
 	// account" tells them which addresses are registered.
-	ErrInvalidToken = errors.New("authit/emaillogin: invalid or expired sign-in credential")
+	//
+	// It also matches authithttp.ErrInvalidToken under errors.Is, so
+	// authithttp.StatusFor answers 401 to it.
+	ErrInvalidToken = sentinel.New("authit/emaillogin: invalid or expired sign-in credential", sentinel.InvalidToken)
 	// ErrSignUpDisabled means the address matches no account and
 	// Config.DisableSignUp is set. It is returned at redemption, so it
 	// never reveals at request time whether an address is registered.

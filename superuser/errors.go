@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	authitcrypto "github.com/mind-vm/authit/crypto"
+	"github.com/mind-vm/authit/internal/sentinel"
 	"github.com/mind-vm/authit/ratelimit"
 )
 
@@ -18,10 +19,12 @@ var ErrRateLimited = ratelimit.ErrRateLimited
 var ErrWeakPassword = authitcrypto.ErrWeakPassword
 
 var (
-	ErrInvalidCredentials   = errors.New("authit/superuser: invalid credentials")
-	ErrAccountLocked        = errors.New("authit/superuser: account locked")
-	ErrInactive             = errors.New("authit/superuser: account is not active")
-	ErrInvalidToken         = errors.New("authit/superuser: invalid or expired token")
+	ErrInvalidCredentials = errors.New("authit/superuser: invalid credentials")
+	ErrAccountLocked      = errors.New("authit/superuser: account locked")
+	ErrInactive           = errors.New("authit/superuser: account is not active")
+	// ErrInvalidToken also matches authithttp.ErrInvalidToken under
+	// errors.Is, so authithttp.StatusFor answers 401 to it.
+	ErrInvalidToken         = sentinel.New("authit/superuser: invalid or expired token", sentinel.InvalidToken)
 	ErrCannotDeactivateSelf = errors.New("authit/superuser: cannot deactivate your own account")
 	ErrAlreadyBootstrapped  = errors.New("authit/superuser: at least one superuser already exists")
 

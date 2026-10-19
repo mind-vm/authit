@@ -15,6 +15,11 @@ by the author of that contract. `authhandlers.UserSessionAuth` does the translat
 `authhandlers` is the only package that sees both sides. An end-to-end HTTP test caught it; no unit
 test in either package would have.
 
+`authhandlers` has since been removed, and the translation went with it, so the 500 came back for
+every host (#17). It is now fixed at the source: every plane's `ErrInvalidToken` (`user`,
+`superuser`, `pat`, `emaillogin`) also matches `authithttp.ErrInvalidToken` under `errors.Is`, so
+`StatusFor` answers 401 to all of them and no host has to map anything.
+
 ---
 
 ## 1. What T2.4 actually is
