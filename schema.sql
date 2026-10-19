@@ -486,3 +486,37 @@ CREATE TABLE device_authorizations (
     last_polled_at   timestamptz,
     created_at       timestamptz NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------------
+-- field devices -- pin.Stores
+-- ---------------------------------------------------------------------------
+
+-- store.PINStore / store.PINCredential. One PIN per user; the lock after
+-- wrong PINs is kept in failed_login_attempts under the pin package's own
+-- keys ("pin:user:<id>", "pin:login:<login>"), so it has no column here.
+CREATE TABLE pin_credentials (
+    user_id    uuid        PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    pin_hash   text        NOT NULL,                -- argon2id, or an imported $2 bcrypt
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- store.BoundDeviceStore / store.BoundDevice. token_hash is
+-- hex(SHA-256(token)), crypto.HashToken's format, so device tokens another
+-- implementation stored that way import unchanged.
+CREATE TABLE bound_devices (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         text        NOT NULL DEFAULT '',   -- e.g. "iPhone Safari"
+    token_hash   text        NOT NULL UNIQUE,
+    user_agent   text        NOT NULL DEFAULT '',
+    ip_address   text        NOT NULL DEFAULT '',
+    expires_at   timestamptz,                       -- NULL: signed in until revoked
+    last_used_at timestamptz,
+    revoked_at   timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX bound_devices_user_id_idx ON bound_devices (user_id);
+-- TouchBoundDevice is
+--   UPDATE bound_devices SET last_used_at = $2 WHERE id = $1 AND revoked_at IS NULL
+-- so a use racing a revocation cannot write over it.

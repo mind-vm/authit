@@ -54,6 +54,8 @@ func TestConformance(t *testing.T) {
 		Invitations:        func(t *testing.T) store.InvitationStore { return empty(t) },
 		PATs:               func(t *testing.T) store.PersonalAccessTokenStore { return empty(t) },
 		Devices:            func(t *testing.T) store.DeviceAuthorizationStore { return empty(t) },
+		PINs:               func(t *testing.T) store.PINStore { return empty(t) },
+		BoundDevices:       func(t *testing.T) store.BoundDeviceStore { return empty(t) },
 	})
 }
 

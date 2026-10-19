@@ -47,5 +47,7 @@ func TestMemstoreConformance(t *testing.T) {
 		WebAuthnChallenges: func(*testing.T) store.WebAuthnChallengeStore {
 			return memstore.NewWebAuthnChallengeStore()
 		},
+		PINs:         func(*testing.T) store.PINStore { return memstore.NewPINStore() },
+		BoundDevices: func(*testing.T) store.BoundDeviceStore { return memstore.NewBoundDeviceStore() },
 	})
 }

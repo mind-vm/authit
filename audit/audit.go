@@ -113,6 +113,19 @@ const (
 
 	EventDeviceApproved EventType = "device.approved"
 	EventDeviceDenied   EventType = "device.denied"
+
+	// The pin package: a PIN set or cleared by an operator, a sign-in on a
+	// field device, and the devices it binds. EventPINSignInFailed carries
+	// no hint of whether the login or the PIN was wrong, for the reason
+	// the caller's error does not; ActorID is set when the login resolved.
+	EventPINSet              EventType = "pin.set"
+	EventPINCleared          EventType = "pin.cleared"
+	EventPINSignInSucceeded  EventType = "pin.signin.succeeded"
+	EventPINSignInFailed     EventType = "pin.signin.failed"
+	EventPINSignInLocked     EventType = "pin.signin.locked"
+	EventPINDeviceRevoked    EventType = "pin.device.revoked"
+	EventPINDeviceImported   EventType = "pin.device.imported"
+	EventPINCredentialImport EventType = "pin.imported"
 )
 
 // Result is the outcome of the event.

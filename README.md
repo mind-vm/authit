@@ -38,6 +38,7 @@ Postgres at `PGTEST_DSN`). Tool versions are pinned in `mise.toml`.
 | `superuser` | Operator accounts, login/refresh, deactivation, impersonation |
 | `pat` | Personal access tokens — named, scoped, optionally-expiring bearer credentials for CLIs/scripts |
 | `device` | RFC 8628 OAuth 2.0 Device Authorization Grant — "visit this URL, enter this code" CLI login |
+| `pin` | PIN sign-in on a field device that then stays bound with a long-lived, revocable device token |
 | `oidc` | Sign-in with an external identity provider (Google, GitHub, your SSO) |
 | `passkey` | WebAuthn — passkeys, Touch ID, security keys — as a second factor or a primary one |
 | `emaillogin` | Passwordless sign-in: magic links and short email codes |
@@ -101,6 +102,28 @@ userID, scope, err := deviceSvc.PollDeviceToken(ctx, auth.DeviceCode)
 // ErrSlowDown) and poll again; on success, mint whatever credential you want (a pat
 // token, a user session, ...) for userID.
 ```
+
+### Field devices (`pin`)
+
+For offline field apps an operator sets a short numeric PIN, the phone signs in once, and from then on it holds a device token rather than asking for a password. This is not `device`, which is the RFC 8628 grant a CLI uses.
+
+```go
+pinSvc, _ := pin.NewService(pin.Stores{Users: s, PINs: s, Devices: s, Lockouts: s, Tx: s},
+	myResolver, // pin.LoginResolver: personnel number or email -> user id
+	pin.Config{})
+
+pinSvc.SetPIN(ctx, operatorID, userID, "482913")            // lifts a lock
+res, err := pinSvc.SignIn(ctx, login, pin, "iPhone Safari", ua, ip)
+// res.Token goes to the device, once; only its hash is stored
+u, dev, err := pinSvc.ValidateDevice(ctx, token)           // on every request
+pinSvc.RevokeDevice(ctx, operatorID, dev.ID)               // a lost phone
+```
+
+- A wrong login and a wrong PIN give the same answer, `pin.ErrInvalidCredentials`, and cost the same hashing work.
+- `MaxFailedAttempts` wrong PINs within `LockDuration` (5 in 15 minutes by default) lock the login with `pin.ErrLocked`. An unknown login locks the same way. The failures are kept in the same `LockoutStore` the user plane uses, and each attempt is counted before its PIN is checked, so concurrent guesses share one budget. `Config.RateLimiter` is checked first, per address and per login.
+- Device tokens never expire unless `DeviceTokenTTL` is set.
+- Coming from your own implementation: bcrypt PIN hashes verify as they are (`ImportPINHash`) and are re-hashed to Argon2id at the next sign-in. Device tokens stored as hex(SHA-256(token)) are exactly what `crypto.HashToken` writes, so `ImportDevice` keeps those devices signed in.
+- Not implemented yet: binding a device once through a magic link or OIDC and using the PIN only on that device afterwards. Nothing in the device rows records how a device was bound, so such a mode can be added without changing them.
 
 ### Email verification
 
