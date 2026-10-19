@@ -61,12 +61,16 @@ type Hooks struct {
 	// It runs after rate limiting and the lockout check, so it cannot be
 	// used to bypass either, and before the password hash comparison, so
 	// refusing here costs no KDF work.
+	//
+	// IssueSession runs it too, after the account lock, so a gate that
+	// refuses a login refuses every sign-in method, not only passwords.
 	BeforeAuthenticate func(ctx context.Context, email string) error
 
 	// AfterAuthenticate runs when a login has *fully* succeeded — which
 	// for an account with two-factor enabled means after the second
 	// factor, not after the password. A hook stamping a last-seen
 	// timestamp must not fire for a login that stopped half way.
+	// IssueSession runs it the same way.
 	AfterAuthenticate func(ctx context.Context, u store.User) error
 
 	// AfterPasswordChange runs after ChangePassword or ResetPassword, with

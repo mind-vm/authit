@@ -42,7 +42,9 @@ type Options []byte
 // is redeemed it is the ceremony: whoever holds it can finish it.
 type Session []byte
 
-// Result is a completed authentication.
+// Result is a completed authentication. It is not a session:
+// user.Service.IssueSession with user.LoginMethodPasskey turns User.ID into
+// one.
 type Result struct {
 	// User is the authit account that just authenticated.
 	User store.User

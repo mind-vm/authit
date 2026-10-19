@@ -13,7 +13,7 @@ Postgres at `PGTEST_DSN`). Tool versions are pinned in `mise.toml`.
 
 ## Design
 
-- **No database assumption.** Every package that touches persistence depends only on interfaces defined in `store`. A host application implements those interfaces against whatever it uses — Postgres, SQLite, DynamoDB, or nothing at all. `memstore` ships a reference in-memory implementation of every interface, so the library is usable and testable out of the box, and `pgstore` and `sqlitestore` ship the user and operator planes ready-made on Postgres and SQLite, with their own migrations (see [Choosing a store](#choosing-a-store)).
+- **No database assumption.** Every package that touches persistence depends only on interfaces defined in `store`. A host application implements those interfaces against whatever it uses — Postgres, SQLite, DynamoDB, or nothing at all. `memstore` ships a reference in-memory implementation of every interface, so the library is usable and testable out of the box, and `pgstore` and `sqlitestore` ship every port ready-made on Postgres and SQLite, with their own migrations (see [Choosing a store](#choosing-a-store)).
 - **Several ways to sign in, one session model.** Email + password with optional TOTP in `user`; magic links and codes in `emaillogin`; passkeys in `passkey`; external identity providers in `oidc`. The last three resolve *who* someone is; the session is `user`'s.
 - **Three independent planes, one shared crypto/JWT layer:**
   - `user` — registration, login, sessions (signed JWTs or server-side, see [Sessions](#sessions-signature-check-or-lookup)), password reset, email verification, TOTP/2FA.
@@ -33,7 +33,7 @@ One module, `github.com/mind-vm/authit`. `authhandlers` and `sqlbstore`, separat
 | `jwt` | JWT signing and verification: `Signer` and the narrower `Verifier`, HMAC-SHA256, Ed25519 and RS256 signers, JWKS, `Claims` |
 | `store` | Storage-port interfaces — the contract a host application implements |
 | `memstore` | In-memory implementation of every `store` interface, for tests and quick starts |
-| `pgstore` | The user and operator planes on Postgres, with their own goose migrations (`Migrate`, `New`) |
+| `pgstore` | Every store port on Postgres, with their own goose migrations (`Migrate`, `New`) |
 | `sqlitestore` | The same ports as `pgstore` on SQLite, pure Go, with their own migrations (`Open`) |
 | `storetest` | The conformance suite every adapter, yours included, is held to |
 | `user` | Registration, login/logout/refresh, sessions, password reset, email verification, TOTP/2FA |
@@ -346,7 +346,7 @@ One thing to know about `team`: `Admission` runs *inside* the transaction, so a 
 
 ## Choosing a store
 
-`pgstore` and `sqlitestore` implement the same ports, plus `store.TxRunner`, and both pass the same `storetest` run against a real database. Neither covers teams, personal access tokens or device authorization; take those from `memstore` or your own adapter.
+`pgstore` and `sqlitestore` implement the same ports, plus `store.TxRunner`, and both pass the same `storetest` run against a real database. Between them they cover every port in `store`.
 
 | Port | Used by | `memstore` | `pgstore` | `sqlitestore` |
 |---|---|:-:|:-:|:-:|
@@ -356,9 +356,9 @@ One thing to know about `team`: `Admission` runs *inside* the transaction, so a 
 | `AccountStore` | `oidc` | ✓ | ✓ | ✓ |
 | `WebAuthnCredentialStore`, `WebAuthnChallengeStore` | `passkey` | ✓ | ✓ | ✓ |
 | `EmailLoginStore` | `emaillogin` | ✓ | ✓ | ✓ |
-| `TeamStore`, `MemberStore`, `InvitationStore` | `team` | ✓ | — | — |
-| `PersonalAccessTokenStore` | `pat` | ✓ | — | — |
-| `DeviceAuthorizationStore` | `device` | ✓ | — | — |
+| `TeamStore`, `MemberStore`, `InvitationStore` | `team` | ✓ | ✓ | ✓ |
+| `PersonalAccessTokenStore` | `pat` | ✓ | ✓ | ✓ |
+| `DeviceAuthorizationStore` | `device` | ✓ | ✓ | ✓ |
 
 One `*pgstore.Store` or `*sqlitestore.Store` value satisfies every port it covers, so the same `s` goes into each `Stores` field.
 

@@ -50,18 +50,14 @@ func (s *Service) ListMembershipsByUser(ctx context.Context, userID string) ([]s
 // UpdateMemberRole changes a member's role. It refuses to demote the last
 // remaining owner of a team, since that would leave the team unownable.
 func (s *Service) UpdateMemberRole(ctx context.Context, memberID string, role store.Role) error {
-	m, err := s.stores.Members.GetMember(ctx, memberID)
+	m, err := s.guardedMemberWrite(ctx, memberID, func(m *store.Member) bool {
+		return m.Role == store.RoleOwner && role != store.RoleOwner
+	}, func(ctx context.Context, m *store.Member) error {
+		m.Role = role
+		m.UpdatedAt = time.Now()
+		return s.stores.Members.UpdateMember(ctx, m)
+	})
 	if err != nil {
-		return err
-	}
-	if m.Role == store.RoleOwner && role != store.RoleOwner {
-		if err := s.requireNotLastOwner(ctx, m.TeamID, m.ID); err != nil {
-			return err
-		}
-	}
-	m.Role = role
-	m.UpdatedAt = time.Now()
-	if err := s.stores.Members.UpdateMember(ctx, m); err != nil {
 		return err
 	}
 	s.audit.Log(ctx, audit.Event{
@@ -73,18 +69,14 @@ func (s *Service) UpdateMemberRole(ctx context.Context, memberID string, role st
 
 // SetMemberActive activates or deactivates a member (soft removal).
 func (s *Service) SetMemberActive(ctx context.Context, memberID string, active bool) error {
-	m, err := s.stores.Members.GetMember(ctx, memberID)
+	m, err := s.guardedMemberWrite(ctx, memberID, func(m *store.Member) bool {
+		return m.Role == store.RoleOwner && !active
+	}, func(ctx context.Context, m *store.Member) error {
+		m.IsActive = active
+		m.UpdatedAt = time.Now()
+		return s.stores.Members.UpdateMember(ctx, m)
+	})
 	if err != nil {
-		return err
-	}
-	if m.Role == store.RoleOwner && !active {
-		if err := s.requireNotLastOwner(ctx, m.TeamID, m.ID); err != nil {
-			return err
-		}
-	}
-	m.IsActive = active
-	m.UpdatedAt = time.Now()
-	if err := s.stores.Members.UpdateMember(ctx, m); err != nil {
 		return err
 	}
 	s.audit.Log(ctx, audit.Event{
@@ -97,16 +89,12 @@ func (s *Service) SetMemberActive(ctx context.Context, memberID string, active b
 // RemoveMember permanently removes a member from a team. It refuses to
 // remove the last remaining owner.
 func (s *Service) RemoveMember(ctx context.Context, memberID string) error {
-	m, err := s.stores.Members.GetMember(ctx, memberID)
+	m, err := s.guardedMemberWrite(ctx, memberID, func(m *store.Member) bool {
+		return m.Role == store.RoleOwner
+	}, func(ctx context.Context, m *store.Member) error {
+		return s.stores.Members.DeleteMember(ctx, m.ID)
+	})
 	if err != nil {
-		return err
-	}
-	if m.Role == store.RoleOwner {
-		if err := s.requireNotLastOwner(ctx, m.TeamID, m.ID); err != nil {
-			return err
-		}
-	}
-	if err := s.stores.Members.DeleteMember(ctx, memberID); err != nil {
 		return err
 	}
 	s.audit.Log(ctx, audit.Event{
@@ -114,6 +102,33 @@ func (s *Service) RemoveMember(ctx context.Context, memberID string) error {
 		Metadata: map[string]any{"team_id": m.TeamID},
 	})
 	return nil
+}
+
+// guardedMemberWrite reads a member, refuses with ErrLastOwner when
+// losesOwner says the change would take away the team's last active owner,
+// and otherwise applies write -- all in one transaction when Stores.Tx is
+// set. Checked apart from the write, two owners demoting each other at once
+// each see the other still standing and both succeed, leaving a team nobody
+// can administer.
+func (s *Service) guardedMemberWrite(ctx context.Context, memberID string, losesOwner func(*store.Member) bool, write func(context.Context, *store.Member) error) (*store.Member, error) {
+	var m *store.Member
+	err := store.RunInTx(ctx, s.stores.Tx, func(ctx context.Context) error {
+		var err error
+		m, err = s.stores.Members.GetMember(ctx, memberID)
+		if err != nil {
+			return err
+		}
+		if losesOwner(m) {
+			if err := s.requireNotLastOwner(ctx, m.TeamID, m.ID); err != nil {
+				return err
+			}
+		}
+		return write(ctx, m)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 func (s *Service) requireNotLastOwner(ctx context.Context, teamID, excludeMemberID string) error {
