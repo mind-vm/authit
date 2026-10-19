@@ -1,17 +1,18 @@
 -- authit reference schema (PostgreSQL)
 --
--- THIS IS DOCUMENTATION, NOT A MIGRATION. authit ships no DDL on purpose:
--- the store interfaces are the contract, and a host application owns its own
--- schema, naming, and migration tooling. Nothing here is versioned, and
--- authit will never read it.
+-- THIS IS DOCUMENTATION, NOT A MIGRATION. The tested DDL is the goose
+-- migrations pgstore and sqlitestore embed, for the ports they cover; this
+-- file is for a host writing its own adapter, and covers every store
+-- interface, teams, PATs and devices included. Nothing here is versioned,
+-- authit will never read it, and no test applies it.
 --
 -- What it is for: one correct, complete table set, so the column set behind
 -- each store.* type doesn't have to be reverse-engineered from the struct
 -- definitions one at a time. Rename the tables, rename the columns, split
 -- them, merge them into tables you already have, drop the ones whose flows
--- you don't use — the adapter you write (or configure, via sqlbstore) is
--- what maps your names onto authit's fields. sqlbstore/example_test.go is
--- this same schema wired up through sqlbstore, end to end.
+-- you don't use — the adapter you write is what maps your names onto
+-- authit's fields. (sqlbstore, which once wired this schema up end to end,
+-- was removed in v0.4.0.)
 --
 -- Three things here that reading store/*.go will NOT tell you:
 --

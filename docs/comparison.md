@@ -1,5 +1,9 @@
 # authit vs. better-auth vs. goauth
 
+> **Historical.** Written against the v0.3.0 layout. `authhandlers` and `sqlbstore`, which much of
+> this plan refers to, were removed in v0.4.0; `pgstore` and `sqlitestore` replace the latter, and
+> nothing replaces the former. The README describes the current state.
+
 A positioning and gap analysis, and a prioritised plan for what to change in authit.
 
 Comparison points were taken from the [better-auth docs](https://www.better-auth.com/docs) and
