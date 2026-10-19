@@ -1,7 +1,8 @@
 // Package pgstore implements auth's store ports on Postgres through sqlc:
 // the user plane (users, sessions, reset and verification tokens, TOTP,
 // lockout, linked accounts, passkeys and email login), the team plane
-// (teams, members and invitations) and the operator plane.
+// (teams, members and invitations), personal access tokens, RFC 8628 device
+// authorizations and the operator plane.
 //
 // Its tables live in the auth schema and migrate with their own goose
 // version table, so an app runs Migrate beside its own migrations and

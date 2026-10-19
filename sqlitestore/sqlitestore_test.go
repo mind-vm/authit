@@ -94,6 +94,8 @@ func TestConformance(t *testing.T) {
 		Teams:              func(t *testing.T) store.TeamStore { return empty(t) },
 		Members:            func(t *testing.T) store.MemberStore { return empty(t) },
 		Invitations:        func(t *testing.T) store.InvitationStore { return empty(t) },
+		PATs:               func(t *testing.T) store.PersonalAccessTokenStore { return empty(t) },
+		Devices:            func(t *testing.T) store.DeviceAuthorizationStore { return empty(t) },
 	})
 }
 
