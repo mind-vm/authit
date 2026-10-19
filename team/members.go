@@ -69,19 +69,28 @@ func (s *Service) UpdateMemberRole(ctx context.Context, memberID string, role st
 
 // SetMemberActive activates or deactivates a member (soft removal).
 func (s *Service) SetMemberActive(ctx context.Context, memberID string, active bool) error {
+	var ended int
 	m, err := s.guardedMemberWrite(ctx, memberID, func(m *store.Member) bool {
 		return m.Role == store.RoleOwner && !active
 	}, func(ctx context.Context, m *store.Member) error {
 		m.IsActive = active
 		m.UpdatedAt = time.Now()
-		return s.stores.Members.UpdateMember(ctx, m)
+		if err := s.stores.Members.UpdateMember(ctx, m); err != nil {
+			return err
+		}
+		if active {
+			return nil
+		}
+		var err error
+		ended, err = s.endTeamSessions(ctx, m)
+		return err
 	})
 	if err != nil {
 		return err
 	}
 	s.audit.Log(ctx, audit.Event{
 		Type: audit.EventTeamMemberStatusChanged, Result: audit.ResultSuccess, TargetID: memberID,
-		Metadata: map[string]any{"team_id": m.TeamID, "active": active},
+		Metadata: map[string]any{"team_id": m.TeamID, "active": active, "sessions_revoked": ended},
 	})
 	return nil
 }
@@ -89,17 +98,23 @@ func (s *Service) SetMemberActive(ctx context.Context, memberID string, active b
 // RemoveMember permanently removes a member from a team. It refuses to
 // remove the last remaining owner.
 func (s *Service) RemoveMember(ctx context.Context, memberID string) error {
+	var ended int
 	m, err := s.guardedMemberWrite(ctx, memberID, func(m *store.Member) bool {
 		return m.Role == store.RoleOwner
 	}, func(ctx context.Context, m *store.Member) error {
-		return s.stores.Members.DeleteMember(ctx, m.ID)
+		if err := s.stores.Members.DeleteMember(ctx, m.ID); err != nil {
+			return err
+		}
+		var err error
+		ended, err = s.endTeamSessions(ctx, m)
+		return err
 	})
 	if err != nil {
 		return err
 	}
 	s.audit.Log(ctx, audit.Event{
 		Type: audit.EventTeamMemberRemoved, Result: audit.ResultSuccess, TargetID: memberID,
-		Metadata: map[string]any{"team_id": m.TeamID},
+		Metadata: map[string]any{"team_id": m.TeamID, "sessions_revoked": ended},
 	})
 	return nil
 }
@@ -129,6 +144,30 @@ func (s *Service) guardedMemberWrite(ctx context.Context, memberID string, loses
 		return nil, err
 	}
 	return m, nil
+}
+
+// endTeamSessions revokes m's user's sessions acting in m's team, and
+// reports how many. It does nothing without Stores.Sessions, or for a member
+// with no user.
+func (s *Service) endTeamSessions(ctx context.Context, m *store.Member) (int, error) {
+	if s.stores.Sessions == nil || m.UserID == nil {
+		return 0, nil
+	}
+	sessions, err := s.stores.Sessions.ListActiveRefreshTokens(ctx, *m.UserID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, t := range sessions {
+		if t.TeamID == nil || *t.TeamID != m.TeamID {
+			continue
+		}
+		if err := s.stores.Sessions.RevokeRefreshToken(ctx, t.ID); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (s *Service) requireNotLastOwner(ctx context.Context, teamID, excludeMemberID string) error {

@@ -54,4 +54,10 @@ var (
 	// token up first and reporting "not found" would tell a caller their
 	// session expired when the truth is that this server never had one.
 	ErrWrongSessionMode = errors.New("authit/user: operation is not available in the configured session mode")
+	// ErrNotTeamMember means SwitchTeam was asked for a team the user is
+	// not an active member of. The session is left as it was.
+	ErrNotTeamMember = errors.New("authit/user: not an active member of that team")
+	// ErrNoMemberStore means SwitchTeam was called on a Service built
+	// without Stores.Members, which it needs to check the membership.
+	ErrNoMemberStore = errors.New("authit/user: switching teams needs Stores.Members")
 )

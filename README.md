@@ -151,6 +151,19 @@ Sessions expire after `RefreshTokenTTL`, extended on use once `SessionSlidingWin
 
 Both modes use the same rows, so `ListSessions`, `RevokeSession` and `RevokeOtherSessions` behave the same in each. Over HTTP the three operations that name *your own* session differ in where they read it from: in JWT mode from the request (`refresh_token`, `current_refresh_token`), in opaque mode from the bearer credential, because that is the session. `POST /logout` is behind the authenticator in opaque mode for the same reason.
 
+### Acting in a team (`SwitchTeam`)
+
+When teams are tenants, a request needs to know which team the user is acting in, and that belongs on the session rather than in a cookie next to it. `user.Service.SwitchTeam(ctx, sessionToken, teamID, ua, ip)` checks that the user is an active member of `teamID`, rotates the session and returns its replacement. `sessionToken` is the refresh token in JWT mode and the session token in opaque mode. The team then appears as `Claims.TeamID`, in the access token in JWT mode and from `ValidateSession` in opaque mode, and it is carried across `Refresh`. An empty `teamID` switches to no team.
+
+```go
+users, _ := user.NewService(user.Stores{ /* ... */ Members: s}, signer, nil, cfg)
+teams, _ := team.NewService(team.Stores{ /* ... */ Sessions: s}, nil, team.Config{})
+
+pair, err := users.SwitchTeam(ctx, sessionToken, teamID, r.UserAgent(), ip) // ErrNotTeamMember if not an active member
+```
+
+Leaving a team ends the sessions acting in it. With `team.Stores.Sessions` set, `SetMemberActive(..., false)` and `RemoveMember` revoke them in the same transaction. With `user.Stores.Members` set, `Refresh` and `ValidateSession` also check the membership again and refuse a session whose membership has ended. In JWT mode, an access token already issued keeps its `TeamID` until it expires, so a route deciding something that matters still checks the membership.
+
 ### Who is this request? (`authithttp.Authenticator`)
 
 Everything that guards a route takes an `Authenticator`, not a `jwt.Verifier`, because "is this authenticated" stopped being a pure function once a session could be validated by lookup:

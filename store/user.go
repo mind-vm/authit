@@ -36,6 +36,14 @@ type RefreshToken struct {
 	RevokedAt *time.Time
 	UserAgent string
 	IPAddress string
+	// TeamID is the team the session acts in, nil for none. It is set by
+	// user.Service.SwitchTeam and carried across rotation, and it reaches
+	// the validated claims as Claims.TeamID. An adapter must persist it:
+	// one that drops it fails closed, as a session without a team, but
+	// SwitchTeam then appears to do nothing. A schema with teams can
+	// reference them from it with a cascade, so deleting a team ends the
+	// sessions acting in it.
+	TeamID    *string
 	CreatedAt time.Time
 }
 

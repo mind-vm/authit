@@ -107,6 +107,7 @@ type AuthRefreshToken struct {
 	UserAgent string
 	IpAddress string
 	CreatedAt time.Time
+	TeamID    *string
 }
 
 type AuthSuperuser struct {

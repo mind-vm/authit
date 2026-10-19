@@ -28,6 +28,12 @@ type Stores struct {
 	// have always been. See store.TxRunner for the obligation it puts on
 	// an implementation; it is not a formality.
 	Tx store.TxRunner
+	// Members is optional, and only SwitchTeam needs it: it is how a
+	// session comes to act in a team, and how the membership behind that
+	// is checked. With it set, Refresh and ValidateSession check again that
+	// the user is still an active member of the session's team, and end
+	// the session when not. Usually the same MemberStore team.Stores uses.
+	Members store.MemberStore
 }
 
 // Service implements user auth flows.

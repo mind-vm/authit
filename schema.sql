@@ -79,8 +79,13 @@ CREATE TABLE refresh_tokens (
     revoked_at timestamptz,                      -- *time.Time: NULL while live
     user_agent text        NOT NULL DEFAULT '',
     ip_address text        NOT NULL DEFAULT '',
+    team_id    uuid,                             -- *string: the team the session acts in (SwitchTeam)
     created_at timestamptz NOT NULL DEFAULT now()
 );
+-- team_id has no foreign key here only because teams is defined below; the
+-- shipped stores reference teams(id) ON DELETE CASCADE, so deleting a team
+-- ends the sessions acting in it.
+--
 -- In user.SessionModeOpaque this table is the session store: the token is
 -- the credential a caller carries, checked by lookup on every request,
 -- which is what makes revocation take effect at once rather than when an
