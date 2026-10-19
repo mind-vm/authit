@@ -47,7 +47,7 @@ One module, `github.com/mind-vm/authit`. `authhandlers` and `sqlbstore`, separat
 | `emaillogin` | Passwordless sign-in: magic links and short email codes |
 | `authz` | Optional owner/admin/member policy — the correct role check, written once |
 | `ratelimit` | The `Limiter` port, and an in-process token bucket |
-| `authithttp` | The only HTTP wiring authit ships: bearer-token extraction and validation, 401-vs-500 classification, refresh cookies; with #22, session cookies, a session middleware and a CSRF check |
+| `authithttp` | The only HTTP wiring authit ships: bearer-token extraction and validation, 401-vs-500 classification, refresh cookies, session cookies, a session middleware and a CSRF check |
 | `audit` | Opt-in security-event logging (`Logger`, `Event`, `NoopLogger`, `SlogLogger`) — every service's `Config` carries a nil-safe `AuditLogger` |
 
 ## Quick start
@@ -97,9 +97,9 @@ _ = users.Logout(ctx, sessionToken) // ends it, on the next request
 
 Three things to know about that snippet:
 
-- In v0.6.0, `StatusFor` answers 500, not 401, to a revoked or expired opaque session; [#21](https://github.com/mind-vm/authit/pull/21) fixes that. Until it lands, check `errors.Is(err, user.ErrInvalidToken)` first.
+- `StatusFor` answers 401 to a revoked or expired opaque session (every plane's `ErrInvalidToken` matches `authithttp.ErrInvalidToken`); a store failure stays a 500.
 - Under the default `EmailVerificationRequired`, `Authenticate` refuses an account until its address is verified; see [Email verification](#email-verification).
-- In a browser, keep the session token in a cookie, not in JavaScript. [Cookie sessions in a browser](#cookie-sessions-in-a-browser) covers the helpers and middleware for that, and [`examples/sessions`](examples/sessions) is the whole thing runnable (both arrive with #22).
+- In a browser, keep the session token in a cookie, not in JavaScript. [Cookie sessions in a browser](#cookie-sessions-in-a-browser) covers the helpers and middleware for that, and [`examples/sessions`](examples/sessions) is the whole thing runnable.
 
 For tests and demos, every store above can be swapped for its `memstore` counterpart (`memstore.NewUserStore()`, `memstore.NewRefreshTokenStore()`, ...). Leave `SessionMode` at its zero value for the default JWT model: a short access JWT plus a rotating refresh token.
 
@@ -223,8 +223,6 @@ claims, err := auth.Authenticate(r.Context(), r)
 
 Write your own to authenticate from a gateway header, an mTLS certificate, or a session your own framework issued — authit does not need to know. Return `ErrNoToken` or `ErrInvalidToken` for "not authenticated" (401) and anything else for "the check could not be performed" (500); `StatusFor` sorts them.
 
-> **Until [#21](https://github.com/mind-vm/authit/pull/21) is merged**, `StatusFor` answers 500 to `user.ErrInvalidToken` (and the `superuser`, `pat` and `emaillogin` equivalents), so an expired opaque session reads as an outage. Map `errors.Is(err, user.ErrInvalidToken)` to 401 yourself until then; with #21 every plane's `ErrInvalidToken` also matches `authithttp.ErrInvalidToken`.
-
 Note that `Validate` accepts an impersonation token (`claims.IsImpersonation()`, minted via `superuser.Impersonate`) — it's genuine, so whether acting-as is allowed on a given route is yours to check. If you want revocation to take effect before token expiry, use opaque sessions, or re-resolve the principal from your own storage and treat claims beyond the subject as hints.
 
 ### Refresh-token cookies
@@ -253,8 +251,6 @@ These functions return an error rather than writing a cookie the browser will th
 `ClearRefreshCookie` takes the same options as `SetRefreshCookie` on purpose: a browser matches a deletion by name, domain *and* path, so clearing with a different path leaves the credential in place while the user appears to have logged out.
 
 ### Cookie sessions in a browser
-
-> **Not in v0.6.0.** These APIs ship with [#22](https://github.com/mind-vm/authit/pull/22) (stacked on [#21](https://github.com/mind-vm/authit/pull/21)) and are available once it is merged.
 
 A browser application on `SessionModeOpaque` keeps the session token in an `HttpOnly` cookie. The helpers mirror the refresh-cookie ones, with defaults that suit a credential every page needs: `Path=/`, and `SameSite=Lax`, since `Strict` would show a signed-in user the sign-in page whenever they follow a link to your app from an email.
 
@@ -395,6 +391,7 @@ One thing to know about `team`: `Admission` runs *inside* the transaction, so a 
 | `TeamStore`, `MemberStore`, `InvitationStore` | `team` | ✓ | ✓ | ✓ |
 | `PersonalAccessTokenStore` | `pat` | ✓ | ✓ | ✓ |
 | `DeviceAuthorizationStore` | `device` | ✓ | ✓ | ✓ |
+| `PINStore`, `BoundDeviceStore` | `pin` | ✓ | ✓ | ✓ |
 
 One `*pgstore.Store` or `*sqlitestore.Store` value satisfies every port it covers, so the same `s` goes into each `Stores` field.
 
@@ -471,15 +468,13 @@ Four things `store/*.go` will not tell you, and the reason the reference exists:
 
 ## What's deliberately not included
 
-- **HTTP routes.** authit is a service layer, not a web framework — wire it into your own router (chi, net/http, huma, ...). `authithttp` is the one concession: bearer tokens, cookies, and, with #22, a session middleware and a CSRF check, but no handlers. The `authhandlers` module, which mounted a route group per plane, was removed in v0.4.0, along with `sqlbstore` and `authitctl`.
+- **HTTP routes.** authit is a service layer, not a web framework — wire it into your own router (chi, net/http, huma, ...). `authithttp` is the one concession: bearer tokens, cookies, a session middleware and a CSRF check, but no handlers. The `authhandlers` module, which mounted a route group per plane, was removed in v0.4.0, along with `sqlbstore` and `authitctl`.
 - **Email delivery.** `user.EmailSender` and `emaillogin.Sender` are interfaces; bring your own SMTP/API client.
 - **SAML, RBAC policy engines.** Out of scope; `team.Role` and `store.Member.Role` are plain strings you can extend, and `authz` is a small optional policy, not an engine.
 
 ## Signing in without a password
 
 `emaillogin`, `passkey` and `oidc` answer *who is this* and return a `store.User`. Turning that into a session is `user.Service.IssueSession`, so those sign-ins get the same sessions a password login does: the configured `SessionMode`, rotation, `ListSessions`, revocation.
-
-> **Not in v0.6.0.** `IssueSession` ships with [#24](https://github.com/mind-vm/authit/pull/24) and is available once it is merged.
 
 ```go
 res, err := users.IssueSession(ctx, signedIn.User.ID, user.LoginMethodPasskey, r.UserAgent(), ip)
@@ -699,11 +694,11 @@ Leaving the field nil disables the control rather than breaking, the same shape 
 
 `make ci` — gofmt, `go vet`, `sqlc diff` and `go test ./...` with Postgres at `PGTEST_DSN` — is clean. That is table stakes; the part worth stating is which storage implementations have run against a real database.
 
-`storetest` is the conformance suite every store is held to. `memstore` runs all **19** ports on every `go test`. `pgstore` (against Postgres) and `sqlitestore` (against a SQLite file) run the **14** they implement, and `sqlitestore` also runs the user-plane flows over its `TxRunner`:
+`storetest` is the conformance suite every store is held to. `memstore` runs all **21** ports on every `go test`, and `pgstore` (against Postgres) and `sqlitestore` (against a SQLite file) run all **21** as well. Both also run the `user`, `team`, `pat` and `device` flows over their `TxRunner`:
 
-> users, refresh tokens, password resets, email verifications, TOTP, pending two-factor sessions, lockouts, linked accounts (OIDC), WebAuthn credentials, WebAuthn challenges, email-login tokens, superusers, superuser refresh tokens, superuser two-factor.
+> users, refresh tokens, password resets, email verifications, TOTP, pending two-factor sessions, lockouts, teams, members, invitations, personal access tokens, device authorizations, linked accounts (OIDC), WebAuthn credentials, WebAuthn challenges, email-login tokens, PINs, bound devices, superusers, superuser refresh tokens, superuser two-factor.
 
-The remaining **5 — teams, members, invitations, personal access tokens and devices — have no database adapter here and are verified only against the in-memory fake.** Treat them as the least-tested part of the library.
+Teams, PATs, device authorization, the active team per session and `pin` are the newest parts and have the shortest track record; treat them accordingly.
 
 That distinction is not pedantry. The fake and a database have disagreed before, each time in the database's favour: a dropped timestamp that silently restored a permanent lockout; a malformed id that produced 500 instead of 404; a non-atomic read-then-delete that `memstore` let through as a rare race while Postgres failed it every time; and refresh tokens that every concurrent caller could spend (fixed in v0.6.0 with `ConsumeRefreshToken`). **A green in-memory run is weak evidence.**
 
@@ -714,8 +709,7 @@ Three independent passes over this work — one security, two code review — fo
 ### Known gaps
 
 - **Lifecycle hooks are `user`-plane only.** `team`, `superuser`, `pat` and `device` have none.
-- **No HTTP routes.** Since v0.4.0 every flow is wired by the host; the session middleware in #22 covers guarding routes, not the sign-in, OIDC or passkey ceremonies themselves.
-- **No database adapter for `team`, `pat` and `device`.** Bring your own, and run `storetest` against it.
+- **No HTTP routes.** Since v0.4.0 every flow is wired by the host; `authithttp.SessionMiddleware` covers guarding routes, not the sign-in, OIDC or passkey ceremonies themselves.
 - **No MySQL.** `pgstore` and `sqlitestore` cover Postgres and SQLite; there is no MySQL adapter, DDL or conformance run.
 - **`PendingTwoFactorStore`'s single-use property depends on the optional `TxRunner`.** Leave `Tx` nil and two concurrent requests can spend one pending-2FA token. The WebAuthn challenge store was given an atomic `Consume` for exactly this reason; this port has not been.
 - No SAML. No FIDO Metadata Service attestation verification.
