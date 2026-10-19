@@ -315,3 +315,170 @@ func TestIssueSessionRefusesBadInput(t *testing.T) {
 		t.Fatalf("audit event: %+v", e)
 	}
 }
+
+// enrollTOTPFor turns on TOTP for uid through the service.
+func enrollTOTPFor(t *testing.T, svc *user.Service, uid, email string) {
+	t.Helper()
+	ctx := context.Background()
+	setup, err := svc.BeginTwoFactorSetup(ctx, uid, email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := totp.GenerateCode(setup.Secret, time.Now())
+	if _, err := svc.ConfirmTwoFactorSetup(ctx, uid, code); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A passkey with user verification is possession plus a PIN or biometric:
+// two factors. Asking for TOTP on top would be ceremony. Every other method
+// is one factor and still owes the code.
+func TestIssueSessionPasskeySatisfiesTwoFactor(t *testing.T) {
+	for _, m := range sessionModes {
+		t.Run(m.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newIssueFixture(t, m.mode, user.Config{})
+			uid := registerCaptured(t, f.svc, f.emailer, "erin@example.com", "correct-horse-battery")
+			enrollTOTPFor(t, f.svc, uid, "erin@example.com")
+
+			res, err := f.svc.IssueSession(ctx, uid, user.LoginMethodPasskey, "ua", "ip")
+			if err != nil {
+				t.Fatalf("IssueSession(passkey): %v", err)
+			}
+			if res.RequiresTwoFactor || res.Tokens == nil {
+				t.Fatalf("a passkey should get the session directly, got %+v", res)
+			}
+			if m.mode == user.SessionModeOpaque {
+				if _, err := f.svc.ValidateSession(ctx, res.Tokens.AccessToken); err != nil {
+					t.Fatalf("ValidateSession: %v", err)
+				}
+			}
+			if got := f.sessions(t, uid); len(got) != 1 {
+				t.Fatalf("expected one session, got %d", len(got))
+			}
+
+			for _, method := range []user.LoginMethod{
+				user.LoginMethodMagicLink, user.LoginMethodSignInCode, user.LoginMethodOIDC, "passkey_unverified",
+			} {
+				res, err := f.svc.IssueSession(ctx, uid, method, "ua", "ip")
+				if err != nil {
+					t.Fatalf("IssueSession(%s): %v", method, err)
+				}
+				if !res.RequiresTwoFactor || res.Tokens != nil {
+					t.Fatalf("%s must still owe the second factor, got %+v", method, res)
+				}
+			}
+			if got := f.sessions(t, uid); len(got) != 1 {
+				t.Fatalf("only the passkey sign-in may have issued a session, got %d", len(got))
+			}
+		})
+	}
+}
+
+// Redeeming a magic link or a code proves the mailbox, so the account is
+// verified from then on -- including for a password login under the
+// default EmailVerificationRequired, which refused it before.
+func TestIssueSessionEmailMethodsVerifyTheAddress(t *testing.T) {
+	for _, m := range sessionModes {
+		for _, method := range []user.LoginMethod{user.LoginMethodMagicLink, user.LoginMethodSignInCode} {
+			t.Run(m.name+"/"+string(method), func(t *testing.T) {
+				ctx := context.Background()
+				stores, users := freshStores()
+				probe := &storetest.TxProbe{}
+				witness := storetest.NewTxWitness()
+				stores.Tx = probe
+				stores.Users = witnessedUsers{stores.Users, witness}
+				stores.RefreshTokens = witnessedRefreshTokens{stores.RefreshTokens, witness}
+				emailer := &capturingEmailer{}
+				rec := &recordingAudit{}
+				svc := serviceOver(t, stores, emailer, user.Config{SessionMode: m.mode, AuditLogger: rec})
+
+				const email, password = "unverified@example.com", "correct-horse-battery"
+				u, err := svc.Register(ctx, email, password)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := svc.RequestEmailVerification(ctx, u.ID); err != nil {
+					t.Fatal(err)
+				}
+				staleLink := emailer.lastVerificationToken
+				if _, err := svc.Authenticate(ctx, email, password, "ua", "ip"); !errors.Is(err, user.ErrEmailNotVerified) {
+					t.Fatalf("precondition: password login should be refused, got %v", err)
+				}
+
+				res, err := svc.IssueSession(ctx, u.ID, method, "ua", "ip")
+				if err != nil || res.Tokens == nil {
+					t.Fatalf("IssueSession: %+v, %v", res, err)
+				}
+				if !res.User.EmailVerified || res.User.EmailVerifiedAt == nil {
+					t.Fatalf("the result should carry the verified user, got %+v", res.User)
+				}
+				stored, err := users.GetUserByID(ctx, u.ID)
+				if err != nil || !stored.EmailVerified {
+					t.Fatalf("the stored user should be verified: %+v, %v", stored, err)
+				}
+				// The write went in with the session.
+				witness.AssertInTx(t, "UpdateUser")
+				witness.AssertInTx(t, "CreateRefreshToken")
+				if !rec.has(audit.EventUserEmailVerified) {
+					t.Fatal("expected an email-verified audit event")
+				}
+				// As MarkEmailVerified does: a link still in the inbox is dead.
+				if err := svc.VerifyEmail(ctx, staleLink); !errors.Is(err, user.ErrInvalidToken) {
+					t.Fatalf("the outstanding verification link should be gone, got %v", err)
+				}
+
+				if _, err := svc.Authenticate(ctx, email, password, "ua", "ip"); err != nil {
+					t.Fatalf("password login after the email sign-in: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// Only the email methods prove the address. A passkey or OIDC sign-in into
+// an unverified account (allowed under EmailVerificationOptional) leaves it
+// unverified.
+func TestIssueSessionOtherMethodsDoNotVerify(t *testing.T) {
+	ctx := context.Background()
+	f := newIssueFixture(t, user.SessionModeOpaque, user.Config{EmailVerification: user.EmailVerificationOptional})
+	u, err := f.svc.Register(ctx, "unverified@example.com", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []user.LoginMethod{user.LoginMethodPasskey, user.LoginMethodOIDC} {
+		res, err := f.svc.IssueSession(ctx, u.ID, method, "ua", "ip")
+		if err != nil {
+			t.Fatalf("IssueSession(%s): %v", method, err)
+		}
+		if res.User.EmailVerified {
+			t.Fatalf("%s must not verify the address", method)
+		}
+	}
+	if f.audit.has(audit.EventUserEmailVerified) {
+		t.Fatal("no email-verified event expected")
+	}
+}
+
+// The mailbox is proven whether or not the second factor follows, so an
+// email sign-in that stops at the TOTP step still verifies the address.
+func TestIssueSessionVerifiesTheAddressBeforeTheSecondFactor(t *testing.T) {
+	ctx := context.Background()
+	f := newIssueFixture(t, user.SessionModeOpaque, user.Config{})
+	u, err := f.svc.Register(ctx, "erin@example.com", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollTOTPFor(t, f.svc, u.ID, "erin@example.com")
+
+	res, err := f.svc.IssueSession(ctx, u.ID, user.LoginMethodSignInCode, "ua", "ip")
+	if err != nil || !res.RequiresTwoFactor {
+		t.Fatalf("expected a pending second factor: %+v, %v", res, err)
+	}
+	if !res.User.EmailVerified {
+		t.Fatal("the address should be verified even though the login is not finished")
+	}
+	if got := f.sessions(t, u.ID); len(got) != 0 {
+		t.Fatalf("no session before the second factor, got %d", len(got))
+	}
+}
