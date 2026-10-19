@@ -54,7 +54,7 @@ func toUser(r db.AuthUser) *store.User {
 func (s *Store) CreateRefreshToken(ctx context.Context, t *store.RefreshToken) error {
 	return mapErr(s.q(ctx).CreateRefreshToken(ctx, db.CreateRefreshTokenParams{
 		ID: t.ID, UserID: t.UserID, TokenHash: t.TokenHash, ExpiresAt: t.ExpiresAt,
-		RevokedAt: t.RevokedAt, UserAgent: t.UserAgent, IpAddress: t.IPAddress, CreatedAt: t.CreatedAt,
+		RevokedAt: t.RevokedAt, UserAgent: t.UserAgent, IpAddress: t.IPAddress, TeamID: t.TeamID, CreatedAt: t.CreatedAt,
 	}))
 }
 
@@ -113,7 +113,7 @@ func (s *Store) ListActiveRefreshTokens(ctx context.Context, userID string) ([]*
 func toRefreshToken(r db.AuthRefreshToken) *store.RefreshToken {
 	return &store.RefreshToken{
 		ID: r.ID, UserID: r.UserID, TokenHash: r.TokenHash, ExpiresAt: r.ExpiresAt,
-		RevokedAt: r.RevokedAt, UserAgent: r.UserAgent, IPAddress: r.IpAddress, CreatedAt: r.CreatedAt,
+		RevokedAt: r.RevokedAt, UserAgent: r.UserAgent, IPAddress: r.IpAddress, TeamID: r.TeamID, CreatedAt: r.CreatedAt,
 	}
 }
 

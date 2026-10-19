@@ -25,9 +25,14 @@ func (s *Service) ListSessions(ctx context.Context, userID, currentRefreshToken 
 	}
 	sessions := make([]Session, 0, len(tokens))
 	for _, t := range tokens {
+		var teamID string
+		if t.TeamID != nil {
+			teamID = *t.TeamID
+		}
 		sessions = append(sessions, Session{
 			ID:        t.ID,
 			IsCurrent: currentHash != "" && t.TokenHash == currentHash,
+			TeamID:    teamID,
 			UserAgent: t.UserAgent,
 			IPAddress: t.IPAddress,
 			CreatedAt: t.CreatedAt,
@@ -141,10 +146,14 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (authitjwt.
 		return authitjwt.Claims{}, err
 	}
 
+	if err := s.requireActiveMembership(ctx, t); err != nil {
+		return authitjwt.Claims{}, err
+	}
+
 	if err := s.extendSession(ctx, t, now); err != nil {
 		return authitjwt.Claims{}, err
 	}
-	return newAccessClaims(u.ID, u.Email, t.ExpiresAt), nil
+	return newAccessClaims(u.ID, u.Email, t.TeamID, t.ExpiresAt), nil
 }
 
 // extendSession pushes a session's expiry out, but only once enough of its

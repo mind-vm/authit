@@ -58,6 +58,13 @@ type Stores struct {
 	// consistent. Keep an AdmitMember implementation fast and free of
 	// external I/O -- it holds a database transaction open.
 	Tx store.TxRunner
+	// Sessions is optional: the user plane's session store, usually the
+	// same RefreshTokenStore user.Stores uses. With it set, deactivating or
+	// removing a member also revokes that user's sessions acting in the
+	// team (see user.Service.SwitchTeam), in the same transaction as the
+	// change. Without it those sessions end at their next Refresh or
+	// ValidateSession, provided user.Stores.Members is set.
+	Sessions store.RefreshTokenStore
 }
 
 // Admission is consulted before a new member is admitted to a team, either

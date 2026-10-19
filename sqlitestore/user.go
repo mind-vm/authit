@@ -47,12 +47,12 @@ func (s *Store) UpdateUser(ctx context.Context, u *store.User) error {
 		u.Email, u.PasswordHash, u.EmailVerified, tsPtr(u.EmailVerifiedAt), ts(u.UpdatedAt), id)
 }
 
-const refreshTokenCols = `id, user_id, token_hash, expires_at, revoked_at, user_agent, ip_address, created_at`
+const refreshTokenCols = `id, user_id, token_hash, expires_at, revoked_at, user_agent, ip_address, team_id, created_at`
 
 func scanRefreshToken(r scanner) (*store.RefreshToken, error) {
 	var t store.RefreshToken
 	err := r.Scan(&t.ID, &t.UserID, &t.TokenHash, tm{&t.ExpiresAt}, tmPtr{&t.RevokedAt},
-		&t.UserAgent, &t.IPAddress, tm{&t.CreatedAt})
+		&t.UserAgent, &t.IPAddress, &t.TeamID, tm{&t.CreatedAt})
 	return &t, err
 }
 
@@ -65,8 +65,15 @@ func (s *Store) CreateRefreshToken(ctx context.Context, t *store.RefreshToken) e
 		return err
 	}
 	t.UserID = userID
-	return s.exec(ctx, `INSERT INTO auth_refresh_tokens (`+refreshTokenCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.UserID, t.TokenHash, ts(t.ExpiresAt), tsPtr(t.RevokedAt), t.UserAgent, t.IPAddress, ts(t.CreatedAt))
+	if t.TeamID != nil {
+		teamID, err := ref(*t.TeamID)
+		if err != nil {
+			return err
+		}
+		t.TeamID = &teamID
+	}
+	return s.exec(ctx, `INSERT INTO auth_refresh_tokens (`+refreshTokenCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.UserID, t.TokenHash, ts(t.ExpiresAt), tsPtr(t.RevokedAt), t.UserAgent, t.IPAddress, t.TeamID, ts(t.CreatedAt))
 }
 
 func (s *Store) GetRefreshTokenByHash(ctx context.Context, hash string) (*store.RefreshToken, error) {

@@ -29,6 +29,8 @@ type AuthResult struct {
 type Session struct {
 	ID        string
 	IsCurrent bool
+	// TeamID is the team the session acts in, empty for none.
+	TeamID    string
 	UserAgent string
 	IPAddress string
 	CreatedAt time.Time
