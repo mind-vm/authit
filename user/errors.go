@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	authitcrypto "github.com/mind-vm/authit/crypto"
+	"github.com/mind-vm/authit/internal/sentinel"
 	"github.com/mind-vm/authit/ratelimit"
 )
 
@@ -24,11 +25,13 @@ var ErrRateLimited = ratelimit.ErrRateLimited
 var ErrWeakPassword = authitcrypto.ErrWeakPassword
 
 var (
-	ErrInvalidCredentials  = errors.New("authit/user: invalid credentials")
-	ErrEmailTaken          = errors.New("authit/user: email already registered")
-	ErrEmailNotVerified    = errors.New("authit/user: email not verified")
-	ErrAccountLocked       = errors.New("authit/user: account locked")
-	ErrInvalidToken        = errors.New("authit/user: invalid or expired token")
+	ErrInvalidCredentials = errors.New("authit/user: invalid credentials")
+	ErrEmailTaken         = errors.New("authit/user: email already registered")
+	ErrEmailNotVerified   = errors.New("authit/user: email not verified")
+	ErrAccountLocked      = errors.New("authit/user: account locked")
+	// ErrInvalidToken also matches authithttp.ErrInvalidToken under
+	// errors.Is, so authithttp.StatusFor answers 401 to it.
+	ErrInvalidToken        = sentinel.New("authit/user: invalid or expired token", sentinel.InvalidToken)
 	ErrTwoFactorRequired   = errors.New("authit/user: two-factor code required")
 	ErrTwoFactorEnabled    = errors.New("authit/user: two-factor already enabled")
 	ErrTwoFactorNotEnabled = errors.New("authit/user: two-factor not enabled")
