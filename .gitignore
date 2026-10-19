@@ -4,3 +4,7 @@
 
 # macOS Finder metadata.
 .DS_Store
+
+# The sessions example's binary, and the database it creates by default.
+/examples/sessions/sessions
+sessions-example.db*

@@ -1,9 +1,10 @@
 // Package authithttp is the only HTTP wiring authit's core ships:
 // RFC-correct bearer-token extraction, token validation, the
-// classification of what went wrong, and refresh-token cookies. It imports
-// net/http and nothing else beyond authit's own jwt package — no router, no
-// http.Handler, no context key, no opinion about what a 401 body looks
-// like. Those are the host application's business.
+// classification of what went wrong, refresh- and session-token cookies,
+// and a cookie-session middleware with an optional CSRF check. It imports
+// net/http and nothing else beyond authit's own jwt package — no router and
+// no opinion about what a 401 body looks like. Those are the host
+// application's business.
 //
 // Everything here earns its place the same way: the step is identical in
 // every consumer, and quietly security-critical when got slightly wrong.
@@ -40,6 +41,20 @@
 // decisions that are not really decisions — HttpOnly, Secure, SameSite —
 // out of the caller's hands, and refuse to write a cookie the browser will
 // silently discard.
+//
+// # Cookie sessions
+//
+// A browser application on user.SessionModeOpaque keeps the one session
+// token in a cookie. SetSessionCookie, ClearSessionCookie and SessionCookie
+// handle it as the refresh-cookie helpers handle theirs. SessionMiddleware
+// guards routes with it: claims into the context for ClaimsFrom, a 303 to
+// the sign-in page for a browser navigation, 401 for everything else, 500
+// when the session store cannot answer, and the cookie's lifetime slid
+// along with the session's. SafeReturnTo checks the return-to path the
+// sign-in page is handed. CSRFProtect refuses state-changing requests from
+// other origins, with a double-submit token as an option.
+//
+// examples/sessions is all of it wired together over sqlitestore.
 package authithttp
 
 import (
