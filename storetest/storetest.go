@@ -31,6 +31,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -225,4 +226,43 @@ func ptr[T any](v T) *T { return &v }
 func id(n int) string {
 	const hex = "0123456789abcdef"
 	return "00000000-0000-4000-8000-0000000000" + string([]byte{hex[(n>>4)&0xf], hex[n&0xf]})
+}
+
+// race runs fn from many goroutines released at once and returns how many
+// reported true. An error from any of them fails the test: a store that
+// refuses concurrent writers instead of serialising them is a store an app
+// cannot serve two requests on.
+func race(t *testing.T, fn func() (bool, error)) int {
+	t.Helper()
+	const n = 16
+	var (
+		start sync.WaitGroup
+		done  sync.WaitGroup
+		mu    sync.Mutex
+		won   int
+		errs  []error
+	)
+	start.Add(1)
+	for i := 0; i < n; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+			ok, err := fn()
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+			}
+			if ok {
+				won++
+			}
+		}()
+	}
+	start.Done()
+	done.Wait()
+	for _, err := range errs {
+		t.Errorf("concurrent call: %v", err)
+	}
+	return won
 }

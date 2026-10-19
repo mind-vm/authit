@@ -312,6 +312,39 @@ func RunSuperuserRefreshTokenStore(t *testing.T, newStore func(*testing.T) store
 		}
 	})
 
+	t.Run("ConsumeSuperuserRefreshToken revokes a live token once", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureSuperuser(t, id(81))
+		rt := mk(id(31), id(81), "h1")
+		requireNoError(t, "create", s.CreateSuperuserRefreshToken(ctx(), rt))
+		ok, err := s.ConsumeSuperuserRefreshToken(ctx(), rt.ID)
+		requireNoError(t, "consume", err)
+		if !ok {
+			t.Fatal("ConsumeSuperuserRefreshToken of a live token must report true")
+		}
+		got, err := s.GetSuperuserRefreshTokenByHash(ctx(), "h1")
+		requireNoError(t, "get", err)
+		if got.RevokedAt == nil {
+			t.Fatal("ConsumeSuperuserRefreshToken must set RevokedAt")
+		}
+		if ok, err := s.ConsumeSuperuserRefreshToken(ctx(), rt.ID); err != nil || ok {
+			t.Fatalf("ConsumeSuperuserRefreshToken of a revoked token = %v, %v; want false, nil", ok, err)
+		}
+		if ok, err := s.ConsumeSuperuserRefreshToken(ctx(), id(39)); err != nil || ok {
+			t.Fatalf("ConsumeSuperuserRefreshToken of an unknown id = %v, %v; want false, nil", ok, err)
+		}
+	})
+
+	t.Run("ConsumeSuperuserRefreshToken has exactly one concurrent winner", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureSuperuser(t, id(81))
+		rt := mk(id(31), id(81), "h1")
+		requireNoError(t, "create", s.CreateSuperuserRefreshToken(ctx(), rt))
+		if won := race(t, func() (bool, error) { return s.ConsumeSuperuserRefreshToken(ctx(), rt.ID) }); won != 1 {
+			t.Fatalf("%d concurrent ConsumeSuperuserRefreshToken calls reported true, want exactly 1", won)
+		}
+	})
+
 	t.Run("RevokeAll is scoped to one operator", func(t *testing.T) {
 		s := newStore(t)
 		fx.ensureSuperuser(t, id(81), id(82))

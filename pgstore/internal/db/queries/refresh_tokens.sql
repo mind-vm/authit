@@ -8,6 +8,10 @@ SELECT * FROM auth.refresh_tokens WHERE token_hash = $1;
 -- name: RevokeRefreshToken :execrows
 UPDATE auth.refresh_tokens SET revoked_at = COALESCE(revoked_at, now()) WHERE id = $1;
 
+-- Revokes only a live token, so of concurrent refreshes exactly one matches.
+-- name: ConsumeRefreshToken :execrows
+UPDATE auth.refresh_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL;
+
 -- A revoked session must not be extended back to life.
 -- name: TouchRefreshToken :execrows
 UPDATE auth.refresh_tokens SET expires_at = $2 WHERE id = $1 AND revoked_at IS NULL;

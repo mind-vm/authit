@@ -29,6 +29,11 @@ func (s witnessedRefreshTokens) RevokeRefreshToken(ctx context.Context, id strin
 	return s.RefreshTokenStore.RevokeRefreshToken(ctx, id)
 }
 
+func (s witnessedRefreshTokens) ConsumeRefreshToken(ctx context.Context, id string) (bool, error) {
+	s.w.Record(ctx, "ConsumeRefreshToken")
+	return s.RefreshTokenStore.ConsumeRefreshToken(ctx, id)
+}
+
 func (s witnessedRefreshTokens) RevokeAllUserRefreshTokens(ctx context.Context, userID string) error {
 	s.w.Record(ctx, "RevokeAllUserRefreshTokens")
 	return s.RefreshTokenStore.RevokeAllUserRefreshTokens(ctx, userID)
@@ -119,7 +124,7 @@ func TestRefreshRotatesInsideATransaction(t *testing.T) {
 	if f.probe.CallCount() != 1 {
 		t.Fatalf("Refresh opened %d transactions, want 1", f.probe.CallCount())
 	}
-	f.witness.AssertInTx(t, "RevokeRefreshToken")
+	f.witness.AssertInTx(t, "ConsumeRefreshToken")
 	f.witness.AssertInTx(t, "CreateRefreshToken")
 }
 

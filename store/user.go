@@ -45,6 +45,13 @@ type RefreshTokenStore interface {
 	CreateRefreshToken(ctx context.Context, t *RefreshToken) error
 	GetRefreshTokenByHash(ctx context.Context, hash string) (*RefreshToken, error)
 	RevokeRefreshToken(ctx context.Context, id string) error
+	// ConsumeRefreshToken revokes the token only if it is not revoked yet,
+	// and reports whether this call was the one that revoked it. It must be
+	// a single atomic step: of any number of concurrent calls on one id,
+	// exactly one reports true. Refresh relies on it to make a refresh
+	// token single-use; a read followed by an unconditional write lets
+	// every concurrent caller win. An unknown id reports false.
+	ConsumeRefreshToken(ctx context.Context, id string) (bool, error)
 	// TouchRefreshToken pushes a token's expiry out to expiresAt, and
 	// reports ErrNotFound if it is gone or already revoked.
 	//

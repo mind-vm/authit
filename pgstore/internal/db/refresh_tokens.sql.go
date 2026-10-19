@@ -10,6 +10,19 @@ import (
 	"time"
 )
 
+const consumeRefreshToken = `-- name: ConsumeRefreshToken :execrows
+UPDATE auth.refresh_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
+`
+
+// Revokes only a live token, so of concurrent refreshes exactly one matches.
+func (q *Queries) ConsumeRefreshToken(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeRefreshToken, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createRefreshToken = `-- name: CreateRefreshToken :exec
 INSERT INTO auth.refresh_tokens (id, user_id, token_hash, expires_at, revoked_at, user_agent, ip_address, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
