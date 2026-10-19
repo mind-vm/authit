@@ -11,7 +11,9 @@ import (
 	"github.com/mind-vm/authit/store"
 )
 
-// Result is a completed passwordless sign-in.
+// Result is a completed passwordless sign-in. It is not a session:
+// user.Service.IssueSession with user.LoginMethodMagicLink or
+// user.LoginMethodSignInCode turns User.ID into one.
 type Result struct {
 	// User is the account this sign-in resolved to.
 	User store.User

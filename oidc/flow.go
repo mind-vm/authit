@@ -91,7 +91,8 @@ func (s *Service) oauthConfig(p Provider, redirectURI string) *oauth2.Config {
 type Result struct {
 	// User is the authit account this sign-in resolved to. It is not a
 	// session: minting one is the host's call, exactly as it is for
-	// pat and device.
+	// pat and device. user.Service.IssueSession with user.LoginMethodOIDC
+	// mints the same session a password login gets.
 	User store.User
 	// Account is the provider link, as it now stands.
 	Account store.Account
