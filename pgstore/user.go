@@ -73,6 +73,14 @@ func (s *Store) RevokeRefreshToken(ctx context.Context, id string) error {
 	return affected(s.q(ctx).RevokeRefreshToken(ctx, id))
 }
 
+func (s *Store) ConsumeRefreshToken(ctx context.Context, id string) (bool, error) {
+	if !isID(id) {
+		return false, nil
+	}
+	n, err := s.q(ctx).ConsumeRefreshToken(ctx, id)
+	return n == 1, mapErr(err)
+}
+
 func (s *Store) TouchRefreshToken(ctx context.Context, id string, expiresAt time.Time) error {
 	if !isID(id) {
 		return store.ErrNotFound

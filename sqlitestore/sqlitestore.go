@@ -218,6 +218,16 @@ func (s *Store) exec(ctx context.Context, query string, args ...any) error {
 	return mapErr(err)
 }
 
+// execCount runs a write and reports how many rows it matched.
+func (s *Store) execCount(ctx context.Context, query string, args ...any) (int64, error) {
+	res, err := s.q(ctx).ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	return n, mapErr(err)
+}
+
 // execRow runs a write that must match a row, and reports one that matched
 // none as store.ErrNotFound.
 func (s *Store) execRow(ctx context.Context, query string, args ...any) error {

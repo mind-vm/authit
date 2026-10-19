@@ -111,6 +111,15 @@ func (s *Store) RevokeSuperuserRefreshToken(ctx context.Context, id string) erro
 		now(), id)
 }
 
+func (s *Store) ConsumeSuperuserRefreshToken(ctx context.Context, id string) (bool, error) {
+	id, ok := canon(id)
+	if !ok {
+		return false, nil
+	}
+	n, err := s.execCount(ctx, `UPDATE auth_superuser_refresh_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, now(), id)
+	return n == 1, err
+}
+
 func (s *Store) RevokeAllSuperuserRefreshTokens(ctx context.Context, superuserID string) error {
 	superuserID, ok := canon(superuserID)
 	if !ok {

@@ -82,6 +82,15 @@ func (s *Store) RevokeRefreshToken(ctx context.Context, id string) error {
 	return s.execRow(ctx, `UPDATE auth_refresh_tokens SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?`, now(), id)
 }
 
+func (s *Store) ConsumeRefreshToken(ctx context.Context, id string) (bool, error) {
+	id, ok := canon(id)
+	if !ok {
+		return false, nil
+	}
+	n, err := s.execCount(ctx, `UPDATE auth_refresh_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, now(), id)
+	return n == 1, err
+}
+
 // TouchRefreshToken does not extend a revoked session back to life.
 func (s *Store) TouchRefreshToken(ctx context.Context, id string, expiresAt time.Time) error {
 	id, ok := canon(id)

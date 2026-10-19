@@ -107,6 +107,14 @@ func (s *Store) RevokeSuperuserRefreshToken(ctx context.Context, id string) erro
 	return affected(s.q(ctx).RevokeSuperuserRefreshToken(ctx, id))
 }
 
+func (s *Store) ConsumeSuperuserRefreshToken(ctx context.Context, id string) (bool, error) {
+	if !isID(id) {
+		return false, nil
+	}
+	n, err := s.q(ctx).ConsumeSuperuserRefreshToken(ctx, id)
+	return n == 1, mapErr(err)
+}
+
 func (s *Store) RevokeAllSuperuserRefreshTokens(ctx context.Context, superuserID string) error {
 	if !isID(superuserID) {
 		return nil

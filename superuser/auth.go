@@ -174,15 +174,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 		// Replay of a token this plane already spent -- see the user
 		// plane's Refresh for the reasoning. It matters more here: these
 		// tokens can impersonate.
-		result := audit.ResultSuccess
-		if err := s.stores.RefreshTokens.RevokeAllSuperuserRefreshTokens(ctx, t.SuperuserID); err != nil {
-			result = audit.ResultFailure
-		}
-		s.audit.Log(ctx, audit.Event{
-			Type: audit.EventSuperuserTokenReuse, Result: result, ActorID: t.SuperuserID,
-			UserAgent: userAgent, IPAddress: ipAddress,
-			Metadata: map[string]any{"refresh_token_id": t.ID},
-		})
+		s.revokeFamilyOnReuse(ctx, t, userAgent, ipAddress)
 		return TokenPair{}, ErrInvalidToken
 	}
 	su, err := s.stores.Superusers.GetSuperuserByID(ctx, t.SuperuserID)
@@ -192,18 +184,27 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 	if !su.IsActive {
 		return TokenPair{}, ErrInactive
 	}
-	// Rotation is revoke-then-create; see the user plane's Refresh. The
-	// reuse handling above stays outside, because it must commit even
-	// though the call returns an error.
+	// Rotation is consume-then-create; see the user plane's Refresh. The
+	// consume is a compare-and-set, so of concurrent refreshes of one token
+	// exactly one wins and the rest are reuse. The reuse handling stays
+	// outside the transaction, because it must commit even though the call
+	// returns an error.
 	var tokens TokenPair
 	err = store.RunInTx(ctx, s.stores.Tx, func(ctx context.Context) error {
-		if err := s.stores.RefreshTokens.RevokeSuperuserRefreshToken(ctx, t.ID); err != nil {
+		consumed, err := s.stores.RefreshTokens.ConsumeSuperuserRefreshToken(ctx, t.ID)
+		if err != nil {
 			return err
 		}
-		var err error
+		if !consumed {
+			return errTokenSpent
+		}
 		tokens, err = s.issueTokenPair(ctx, su.ID, su.Email, userAgent, ipAddress)
 		return err
 	})
+	if errors.Is(err, errTokenSpent) {
+		s.revokeFamilyOnReuse(ctx, t, userAgent, ipAddress)
+		return TokenPair{}, ErrInvalidToken
+	}
 	if err != nil {
 		return TokenPair{}, err
 	}
@@ -280,4 +281,22 @@ func (s *Service) Verify(token string) (Claims, error) {
 		return Claims{}, ErrInvalidToken
 	}
 	return claims, nil
+}
+
+// errTokenSpent is how Refresh's transaction reports that a concurrent
+// request consumed the token first. It never leaves the package.
+var errTokenSpent = errors.New("authit/superuser: refresh token already spent")
+
+// revokeFamilyOnReuse ends every session the operator holds after a spent
+// token was presented, and records it. The caller returns ErrInvalidToken.
+func (s *Service) revokeFamilyOnReuse(ctx context.Context, t *store.SuperuserRefreshToken, userAgent, ipAddress string) {
+	result := audit.ResultSuccess
+	if err := s.stores.RefreshTokens.RevokeAllSuperuserRefreshTokens(ctx, t.SuperuserID); err != nil {
+		result = audit.ResultFailure
+	}
+	s.audit.Log(ctx, audit.Event{
+		Type: audit.EventSuperuserTokenReuse, Result: result, ActorID: t.SuperuserID,
+		UserAgent: userAgent, IPAddress: ipAddress,
+		Metadata: map[string]any{"refresh_token_id": t.ID},
+	})
 }

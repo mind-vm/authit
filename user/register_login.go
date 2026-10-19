@@ -250,6 +250,10 @@ func (s *Service) recordFailedLogin(ctx context.Context, email, ipAddress string
 	})
 }
 
+// errTokenSpent is how Refresh's transaction reports that a concurrent
+// request consumed the token first. It never leaves the package.
+var errTokenSpent = errors.New("authit/user: refresh token already spent")
+
 // revokeFamilyOnReuse handles a replayed refresh token: it revokes every
 // refresh token the principal holds and records the event.
 //
@@ -339,15 +343,28 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 	// deliberately outside this: it must commit even though the call goes
 	// on to return an error, and rolling it back would undo the revocation
 	// that is the entire response to a stolen token.
+	//
+	// The revoke is a compare-and-set, and it is what makes the token single
+	// use: the RevokedAt check above read the token before this request
+	// held anything, so concurrent requests presenting one token all get
+	// past it. Only one of them consumes the token; the others have
+	// presented a token somebody else just spent, which is reuse.
 	var tokens TokenPair
 	err = store.RunInTx(ctx, s.stores.Tx, func(ctx context.Context) error {
-		if err := s.stores.RefreshTokens.RevokeRefreshToken(ctx, t.ID); err != nil {
+		consumed, err := s.stores.RefreshTokens.ConsumeRefreshToken(ctx, t.ID)
+		if err != nil {
 			return err
 		}
-		var err error
+		if !consumed {
+			return errTokenSpent
+		}
 		tokens, err = s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
 		return err
 	})
+	if errors.Is(err, errTokenSpent) {
+		s.revokeFamilyOnReuse(ctx, t, userAgent, ipAddress)
+		return TokenPair{}, ErrInvalidToken
+	}
 	if err != nil {
 		return TokenPair{}, err
 	}

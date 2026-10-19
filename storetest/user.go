@@ -124,6 +124,47 @@ func RunRefreshTokenStore(t *testing.T, newStore func(*testing.T) store.RefreshT
 		}
 	})
 
+	t.Run("ConsumeRefreshToken revokes a live token once", func(t *testing.T) {
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		rt := mk(id(31), id(1), "hash1", time.Now().Add(time.Hour))
+		requireNoError(t, "CreateRefreshToken", s.CreateRefreshToken(ctx(), rt))
+
+		ok, err := s.ConsumeRefreshToken(ctx(), rt.ID)
+		requireNoError(t, "ConsumeRefreshToken", err)
+		if !ok {
+			t.Fatal("ConsumeRefreshToken of a live token must report true")
+		}
+		got, err := s.GetRefreshTokenByHash(ctx(), "hash1")
+		requireNoError(t, "GetRefreshTokenByHash", err)
+		if got.RevokedAt == nil {
+			t.Fatal("ConsumeRefreshToken must set RevokedAt")
+		}
+		ok, err = s.ConsumeRefreshToken(ctx(), rt.ID)
+		requireNoError(t, "ConsumeRefreshToken twice", err)
+		if ok {
+			t.Fatal("ConsumeRefreshToken of a revoked token must report false")
+		}
+		ok, err = s.ConsumeRefreshToken(ctx(), id(39))
+		requireNoError(t, "ConsumeRefreshToken unknown", err)
+		if ok {
+			t.Fatal("ConsumeRefreshToken of an unknown id must report false")
+		}
+	})
+
+	t.Run("ConsumeRefreshToken has exactly one concurrent winner", func(t *testing.T) {
+		// The property Refresh's single use rests on. A store that reads
+		// and then writes unconditionally passes the test above and fails
+		// this one.
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		rt := mk(id(31), id(1), "hash1", time.Now().Add(time.Hour))
+		requireNoError(t, "CreateRefreshToken", s.CreateRefreshToken(ctx(), rt))
+		if won := race(t, func() (bool, error) { return s.ConsumeRefreshToken(ctx(), rt.ID) }); won != 1 {
+			t.Fatalf("%d concurrent ConsumeRefreshToken calls reported true, want exactly 1", won)
+		}
+	})
+
 	t.Run("ListActiveRefreshTokens excludes revoked and expired", func(t *testing.T) {
 		s := newStore(t)
 		fx.ensureUser(t, id(1), id(2))

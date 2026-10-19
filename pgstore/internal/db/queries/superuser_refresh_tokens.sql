@@ -8,6 +8,9 @@ SELECT * FROM auth.superuser_refresh_tokens WHERE token_hash = $1;
 -- name: RevokeSuperuserRefreshToken :execrows
 UPDATE auth.superuser_refresh_tokens SET revoked_at = COALESCE(revoked_at, now()) WHERE id = $1;
 
+-- name: ConsumeSuperuserRefreshToken :execrows
+UPDATE auth.superuser_refresh_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL;
+
 -- name: RevokeAllSuperuserRefreshTokens :exec
 UPDATE auth.superuser_refresh_tokens SET revoked_at = now() WHERE superuser_id = $1 AND revoked_at IS NULL;
 

@@ -55,6 +55,18 @@ func (s *RefreshTokenStore) RevokeRefreshToken(_ context.Context, id string) err
 	return nil
 }
 
+func (s *RefreshTokenStore) ConsumeRefreshToken(_ context.Context, id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.byID[id]
+	if !ok || t.RevokedAt != nil {
+		return false, nil
+	}
+	now := nowFunc()
+	t.RevokedAt = &now
+	return true, nil
+}
+
 // TouchRefreshToken extends a live token, and refuses a revoked one under
 // the same lock that reads it -- otherwise a session revoked between a
 // request's lookup and its extension would come back with a fresh lifetime.

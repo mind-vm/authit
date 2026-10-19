@@ -51,6 +51,10 @@ type SuperuserRefreshTokenStore interface {
 	CreateSuperuserRefreshToken(ctx context.Context, t *SuperuserRefreshToken) error
 	GetSuperuserRefreshTokenByHash(ctx context.Context, hash string) (*SuperuserRefreshToken, error)
 	RevokeSuperuserRefreshToken(ctx context.Context, id string) error
+	// ConsumeSuperuserRefreshToken is RefreshTokenStore.ConsumeRefreshToken
+	// for operator tokens: revoke only if live, atomically, and report
+	// whether this call did it.
+	ConsumeSuperuserRefreshToken(ctx context.Context, id string) (bool, error)
 	RevokeAllSuperuserRefreshTokens(ctx context.Context, superuserID string) error
 	// ListActiveSuperuserRefreshTokens returns the unrevoked, unexpired
 	// tokens for one operator, oldest first: their sessions.

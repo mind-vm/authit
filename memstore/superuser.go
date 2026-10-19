@@ -127,6 +127,18 @@ func (s *SuperuserRefreshTokenStore) RevokeSuperuserRefreshToken(_ context.Conte
 	return nil
 }
 
+func (s *SuperuserRefreshTokenStore) ConsumeSuperuserRefreshToken(_ context.Context, id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.byID[id]
+	if !ok || t.RevokedAt != nil {
+		return false, nil
+	}
+	now := nowFunc()
+	t.RevokedAt = &now
+	return true, nil
+}
+
 func (s *SuperuserRefreshTokenStore) RevokeAllSuperuserRefreshTokens(_ context.Context, superuserID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
