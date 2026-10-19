@@ -13,7 +13,7 @@ Postgres at `PGTEST_DSN`). Tool versions are pinned in `mise.toml`.
 
 ## Design
 
-- **No database assumption.** Every package that touches persistence depends only on interfaces defined in `store`. A host application implements those interfaces against whatever it uses — Postgres, SQLite, DynamoDB, or nothing at all. `memstore` ships a reference in-memory implementation of every interface, so the library is usable and testable out of the box.
+- **No database assumption.** Every package that touches persistence depends only on interfaces defined in `store`. A host application implements those interfaces against whatever it uses — Postgres, SQLite, DynamoDB, or nothing at all. `memstore` ships a reference in-memory implementation of every interface, so the library is usable and testable out of the box, and `pgstore` and `sqlitestore` ship the user and operator planes ready-made on Postgres and SQLite (see [Choosing a store](#choosing-a-store)).
 - **No social/OAuth login.** Email + password (+ optional TOTP) only, by design, for now.
 - **Three independent planes, one shared crypto/JWT layer:**
   - `user` — registration, login, sessions, password reset, email verification, TOTP/2FA.
@@ -31,6 +31,8 @@ Postgres at `PGTEST_DSN`). Tool versions are pinned in `mise.toml`.
 | `jwt` | JWT signing/verification (`Signer` interface, HMAC-SHA256 implementation), `Claims` |
 | `store` | Storage-port interfaces — the contract a host application implements |
 | `memstore` | In-memory implementation of every `store` interface, for tests and quick starts |
+| `pgstore` | The user and operator planes on Postgres, with their own migrations (`Migrate`) |
+| `sqlitestore` | The same ports as `pgstore` on SQLite, pure Go, for a CLI or a single host (`Open`) |
 | `user` | Registration, login/logout/refresh, sessions, password reset, email verification, TOTP/2FA |
 | `team` | Teams, membership, roles, invitations |
 | `superuser` | Operator accounts, login/refresh, deactivation, impersonation |
@@ -319,6 +321,34 @@ One thing to know about `team`: `Admission` runs *inside* the transaction, so a 
 
 `storetest.TxProbe` and `storetest.TxWitness` let you assert which writes your own code puts inside a transaction. They provide no atomicity and are not a substitute for testing a real implementation against a real database.
 
+## Choosing a store
+
+`pgstore` and `sqlitestore` implement the same ports — users, sessions, reset and verification tokens, TOTP, lockout, linked accounts, passkeys, email login, the operator plane — plus `store.TxRunner`, and both pass the same `storetest` run. Neither covers teams, personal access tokens or device authorization; take those from `memstore` or your own adapter.
+
+| | Choose it when |
+|---|---|
+| `pgstore` | You run Postgres already, or more than one process writes. Tables live in an `auth` schema; call `pgstore.Migrate(ctx, pool)` beside your own migrations, then `pgstore.New(pool)`. |
+| `sqlitestore` | A CLI, a desktop tool, a single-host service, or tests that should not need Postgres. `sqlitestore.Open(ctx, "auth.db")` creates, configures and migrates the file. |
+| `memstore` | Tests and demos where nothing has to outlive the process. |
+
+```go
+s, err := sqlitestore.Open(ctx, "auth.db")
+if err != nil { /* ... */ }
+defer s.Close()
+svc, err := user.NewService(user.Stores{
+	Users: s, RefreshTokens: s, PasswordResets: s, EmailVerifications: s,
+	TOTP: s, PendingTwoFactor: s, Lockouts: s, Tx: s,
+}, signer, emailer, cfg)
+```
+
+`sqlitestore` uses `modernc.org/sqlite`, a pure-Go driver, so a binary still cross-compiles with only `GOOS` and `GOARCH`. Its tables carry an `auth_` prefix in place of a schema and keep their own goose version table, so an app can keep its own tables in the same file (`s.DB()`). To share a `*sql.DB` you opened yourself, open it with `sqlitestore.DSN(path)` and pass it to `sqlitestore.Migrate` and `sqlitestore.New`.
+
+What SQLite does not match:
+
+- **One writer at a time.** Transactions begin `IMMEDIATE` and a writer waits up to five seconds for the lock. Concurrent writers queue rather than run in parallel, and sustained write load past that wait fails with a busy error where Postgres would have kept going. Several processes on one host can share the file; several hosts cannot.
+- **No in-memory database.** `Open(":memory:")` is refused, since `database/sql` would give each connection its own empty database. Use a file under `t.TempDir()`, or `memstore`.
+- **Ids and instants are text.** Ids are stored as canonical lower-case uuids, so an upper-case id still finds its row; instants are stored in UTC and come back in UTC, where pgx returns them in the local zone.
+
 ## Checking your adapter (`storetest`)
 
 authit's whole design rests on you implementing the `store` ports, and nothing in the library can check that you got them right. An adapter that returns a nil pointer instead of `store.ErrNotFound`, or that filters revoked rows out of a lookup, compiles perfectly and fails at runtime — sometimes as a security bug rather than an outage. [`storetest`](storetest) is where those expectations are written down executably:
@@ -351,7 +381,7 @@ Some of what it pins, and why each one is a bug you would otherwise ship:
 - **`RecoveryCodeHashes` round-trips in order, including when empty.** It is a `[]string` with no obvious storage, so it is the field most likely to be dropped — and it fails only once somebody has lost their phone.
 - **Scoped operations stay scoped.** Listing one team's members, revoking one user's tokens.
 
-The suite runs against `memstore` on every `go test ./...`, and against `sqlbstore` and the reference `schema.sql` when a Postgres DSN is configured.
+The suite runs against `memstore` and `sqlitestore` on every `go test ./...`, and against `pgstore` with Postgres at `PGTEST_DSN`.
 
 ## Database schema
 
@@ -598,7 +628,7 @@ Three independent passes over this work — one security, two code review — fo
 - **Lifecycle hooks are `user`-plane only.** `team`, `superuser`, `pat` and `device` have none.
 - **No route for linking a provider to an already-authenticated user.** Deliberate: it is a differently shaped ceremony that must carry the caller's identity through it, and getting it wrong is an account takeover. `oidc.Service.Link` is there for a host that wires it.
 - **No known-user (second-factor) passkey ceremony over HTTP.** It needs the half-authenticated state only the host holds; `passkey.BeginLogin`/`FinishLogin` are what it calls.
-- **Postgres only.** No SQLite or MySQL adapter, DDL, or conformance run — which is why `authitctl schema print` refuses those dialects rather than guessing.
+- **No MySQL.** `pgstore` and `sqlitestore` cover Postgres and SQLite; there is no MySQL adapter, DDL or conformance run.
 - **`PendingTwoFactorStore`'s single-use property depends on the optional `TxRunner`.** Leave `Tx` nil and two concurrent requests can spend one pending-2FA token. The WebAuthn challenge store was given an atomic `Consume` for exactly this reason; this port has not been.
 - **The OpenAPI documents' schemas are unverified.** A test checks every path and method against the routes actually registered, in both directions. Nothing checks that a described body still matches its Go struct.
 - No SAML. No FIDO Metadata Service attestation verification.
