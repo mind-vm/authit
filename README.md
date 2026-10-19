@@ -451,7 +451,7 @@ if res.RequiresTwoFactor { /* as after Authenticate: VerifyTwoFactorLogin */ }
 // res.Tokens, as from Authenticate
 ```
 
-It refuses an account an operator has locked (`ErrAccountLocked`) and, under `EmailVerificationRequired`, an unverified one, unless the method was a magic link or sign-in code, which proved the address just now. `BeforeAuthenticate` gates it and `AfterAuthenticate` runs with the session. An account with TOTP enabled still owes its second factor. The audit event names the method. The password throttle is not consulted, so failed passwords cannot keep the owner out of their passkey. Pass only an id the identity package returned: `IssueSession` verifies nothing itself.
+It refuses an account an operator has locked (`ErrAccountLocked`) and, under `EmailVerificationRequired`, an unverified one, unless the method was a magic link or sign-in code, which proved the address just now and so also marks it verified. `BeforeAuthenticate` gates it and `AfterAuthenticate` runs with the session. An account with TOTP enabled still owes its second factor, except after a passkey: with user verification that is two factors already, so pass `LoginMethodPasskey` only when `Result.UserVerified` is true. The audit event names the method. The password throttle is not consulted, so failed passwords cannot keep the owner out of their passkey. Pass only an id the identity package returned: `IssueSession` verifies nothing itself.
 
 ## Passwordless email sign-in (`emaillogin`)
 
