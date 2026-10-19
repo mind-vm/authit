@@ -1,5 +1,10 @@
 # Spec — T3.1, `authitctl`
 
+> **Archived.** `authitctl` is not in this repository: it was removed in v0.4.0, together with
+> `sqlbstore` and its `refschema` package, which it was built on. This spec is kept as a record of
+> the decisions; nothing below describes code that exists today. For the operator plane on a real
+> database, use `pgstore` or `sqlitestore` with `superuser.Service.CreateFromShell`.
+
 Status: **implemented**, both decisions taken as recommended — Postgres only (D1), and the reference
 schema promoted to a real package (D2a). Both open questions in §6 were answered by building it:
 `superuser create` earned its module, and `refschema` did land first as its own change.

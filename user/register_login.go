@@ -317,6 +317,15 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 	if time.Now().After(t.ExpiresAt) {
 		return TokenPair{}, ErrInvalidToken
 	}
+	// A session acting in a team the user has since left, or been
+	// deactivated in, is over: renewing it would hand out claims naming a
+	// team the user may no longer act in. This comes before reuse
+	// detection because team.Service revokes such sessions itself, and the
+	// client presenting one afterwards is not evidence of a stolen token;
+	// treating it as one would end the user's sessions in every other team.
+	if err := s.requireActiveMembership(ctx, t); err != nil {
+		return TokenPair{}, err
+	}
 	if t.RevokedAt != nil {
 		// A revoked but unexpired token was just presented. Refresh
 		// rotates -- it revokes the token it consumes -- so the legitimate
@@ -358,7 +367,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent, ipAddres
 		if !consumed {
 			return errTokenSpent
 		}
-		tokens, err = s.issueTokenPair(ctx, u.ID, u.Email, userAgent, ipAddress)
+		tokens, err = s.issueSession(ctx, u.ID, u.Email, t.TeamID, userAgent, ipAddress)
 		return err
 	})
 	if errors.Is(err, errTokenSpent) {
@@ -398,6 +407,12 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 }
 
 func (s *Service) issueTokenPair(ctx context.Context, userID, email, userAgent, ipAddress string) (TokenPair, error) {
+	return s.issueSession(ctx, userID, email, nil, userAgent, ipAddress)
+}
+
+// issueSession is issueTokenPair for a session acting in teamID, nil for
+// none.
+func (s *Service) issueSession(ctx context.Context, userID, email string, teamID *string, userAgent, ipAddress string) (TokenPair, error) {
 	rawRefresh, refreshHash, err := authitcrypto.GenerateOpaqueToken()
 	if err != nil {
 		return TokenPair{}, err
@@ -414,6 +429,7 @@ func (s *Service) issueTokenPair(ctx context.Context, userID, email, userAgent, 
 		ExpiresAt: now.Add(s.cfg.RefreshTokenTTL),
 		UserAgent: userAgent,
 		IPAddress: ipAddress,
+		TeamID:    teamID,
 		CreatedAt: now,
 	}
 	if err := s.stores.RefreshTokens.CreateRefreshToken(ctx, rt); err != nil {
@@ -429,7 +445,7 @@ func (s *Service) issueTokenPair(ctx context.Context, userID, email, userAgent, 
 	}
 
 	expiresAt := now.Add(s.cfg.AccessTokenTTL)
-	access, err := s.signer.Generate(newAccessClaims(userID, email, expiresAt))
+	access, err := s.signer.Generate(newAccessClaims(userID, email, teamID, expiresAt))
 	if err != nil {
 		return TokenPair{}, err
 	}

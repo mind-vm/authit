@@ -1,5 +1,8 @@
 # Spec — T2.4, optional server-side sessions
 
+> **Note (v0.4.0+).** `authhandlers`, which much of this spec wires through, was removed in v0.4.0.
+> The session model is current; guard routes with `authithttp.SessionAuth`.
+
 Status: **implemented**, all three decisions taken as recommended — reuse the refresh row (D1), one
 credential with no refresh (D2), an `Authenticator` seam (D3).
 

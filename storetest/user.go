@@ -103,6 +103,39 @@ func RunRefreshTokenStore(t *testing.T, newStore func(*testing.T) store.RefreshT
 		requireNotFound(t, "GetRefreshTokenByHash", err)
 	})
 
+	t.Run("the session's team round trips", func(t *testing.T) {
+		// The team a session acts in is what user.ValidateSession and
+		// Refresh put into the claims. Lost here, SwitchTeam appears to do
+		// nothing; read back as another team, a session acts in a team it
+		// was never switched to.
+		s := newStore(t)
+		fx.ensureUser(t, id(1))
+		fx.ensureTeam(t, id(11))
+		bound := mk(id(31), id(1), "h1", time.Now().Add(time.Hour))
+		bound.TeamID = ptr(id(11))
+		unbound := mk(id(32), id(1), "h2", time.Now().Add(time.Hour))
+		requireNoError(t, "CreateRefreshToken", s.CreateRefreshToken(ctx(), bound))
+		requireNoError(t, "CreateRefreshToken", s.CreateRefreshToken(ctx(), unbound))
+
+		got, err := s.GetRefreshTokenByHash(ctx(), "h1")
+		requireNoError(t, "GetRefreshTokenByHash", err)
+		if got.TeamID == nil || *got.TeamID != id(11) {
+			t.Fatalf("TeamID = %v, want %s", got.TeamID, id(11))
+		}
+		got, err = s.GetRefreshTokenByHash(ctx(), "h2")
+		requireNoError(t, "GetRefreshTokenByHash", err)
+		if got.TeamID != nil {
+			t.Fatalf("TeamID = %v, want nil for a session without a team", *got.TeamID)
+		}
+		list, err := s.ListActiveRefreshTokens(ctx(), id(1))
+		requireNoError(t, "ListActiveRefreshTokens", err)
+		for _, rt := range list {
+			if rt.ID == bound.ID && (rt.TeamID == nil || *rt.TeamID != id(11)) {
+				t.Fatalf("ListActiveRefreshTokens lost the team: %v", rt.TeamID)
+			}
+		}
+	})
+
 	t.Run("revoked tokens are still returned by hash", func(t *testing.T) {
 		// This one is load-bearing and easy to get wrong. It is tempting to
 		// have the lookup filter out revoked rows, since callers mostly

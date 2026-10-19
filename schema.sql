@@ -1,17 +1,18 @@
 -- authit reference schema (PostgreSQL)
 --
--- THIS IS DOCUMENTATION, NOT A MIGRATION. authit ships no DDL on purpose:
--- the store interfaces are the contract, and a host application owns its own
--- schema, naming, and migration tooling. Nothing here is versioned, and
--- authit will never read it.
+-- THIS IS DOCUMENTATION, NOT A MIGRATION. The tested DDL is the goose
+-- migrations pgstore and sqlitestore embed, for the ports they cover; this
+-- file is for a host writing its own adapter, and covers every store
+-- interface, teams, PATs and devices included. Nothing here is versioned,
+-- authit will never read it, and no test applies it.
 --
 -- What it is for: one correct, complete table set, so the column set behind
 -- each store.* type doesn't have to be reverse-engineered from the struct
 -- definitions one at a time. Rename the tables, rename the columns, split
 -- them, merge them into tables you already have, drop the ones whose flows
--- you don't use — the adapter you write (or configure, via sqlbstore) is
--- what maps your names onto authit's fields. sqlbstore/example_test.go is
--- this same schema wired up through sqlbstore, end to end.
+-- you don't use — the adapter you write is what maps your names onto
+-- authit's fields. (sqlbstore, which once wired this schema up end to end,
+-- was removed in v0.4.0.)
 --
 -- Three things here that reading store/*.go will NOT tell you:
 --
@@ -79,8 +80,13 @@ CREATE TABLE refresh_tokens (
     revoked_at timestamptz,                      -- *time.Time: NULL while live
     user_agent text        NOT NULL DEFAULT '',
     ip_address text        NOT NULL DEFAULT '',
+    team_id    uuid,                             -- *string: the team the session acts in (SwitchTeam)
     created_at timestamptz NOT NULL DEFAULT now()
 );
+-- team_id has no foreign key here only because teams is defined below; the
+-- shipped stores reference teams(id) ON DELETE CASCADE, so deleting a team
+-- ends the sessions acting in it.
+--
 -- In user.SessionModeOpaque this table is the session store: the token is
 -- the credential a caller carries, checked by lookup on every request,
 -- which is what makes revocation take effect at once rather than when an
@@ -481,3 +487,37 @@ CREATE TABLE device_authorizations (
     last_polled_at   timestamptz,
     created_at       timestamptz NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------------
+-- field devices -- pin.Stores
+-- ---------------------------------------------------------------------------
+
+-- store.PINStore / store.PINCredential. One PIN per user; the lock after
+-- wrong PINs is kept in failed_login_attempts under the pin package's own
+-- keys ("pin:user:<id>", "pin:login:<login>"), so it has no column here.
+CREATE TABLE pin_credentials (
+    user_id    uuid        PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    pin_hash   text        NOT NULL,                -- argon2id, or an imported $2 bcrypt
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- store.BoundDeviceStore / store.BoundDevice. token_hash is
+-- hex(SHA-256(token)), crypto.HashToken's format, so device tokens another
+-- implementation stored that way import unchanged.
+CREATE TABLE bound_devices (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         text        NOT NULL DEFAULT '',   -- e.g. "iPhone Safari"
+    token_hash   text        NOT NULL UNIQUE,
+    user_agent   text        NOT NULL DEFAULT '',
+    ip_address   text        NOT NULL DEFAULT '',
+    expires_at   timestamptz,                       -- NULL: signed in until revoked
+    last_used_at timestamptz,
+    revoked_at   timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX bound_devices_user_id_idx ON bound_devices (user_id);
+-- TouchBoundDevice is
+--   UPDATE bound_devices SET last_used_at = $2 WHERE id = $1 AND revoked_at IS NULL
+-- so a use racing a revocation cannot write over it.

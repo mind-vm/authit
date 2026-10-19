@@ -1,5 +1,8 @@
 # Spec — `store.WebAuthnChallengeStore`
 
+> **Note (v0.4.0+).** `sqlbstore` and `authhandlers`, mentioned below, were removed in v0.4.0. The
+> port as specified here is current; `pgstore` and `sqlitestore` implement it with an atomic delete.
+
 Status: **implemented**. Closes S4.2 in [comparison.md](comparison.md).
 
 Resolved against the spec below: the stateless mode in §5 was **dropped** — `Stores.Challenges` is

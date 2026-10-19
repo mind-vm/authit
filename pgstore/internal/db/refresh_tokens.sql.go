@@ -24,8 +24,8 @@ func (q *Queries) ConsumeRefreshToken(ctx context.Context, id string) (int64, er
 }
 
 const createRefreshToken = `-- name: CreateRefreshToken :exec
-INSERT INTO auth.refresh_tokens (id, user_id, token_hash, expires_at, revoked_at, user_agent, ip_address, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO auth.refresh_tokens (id, user_id, token_hash, expires_at, revoked_at, user_agent, ip_address, team_id, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type CreateRefreshTokenParams struct {
@@ -36,6 +36,7 @@ type CreateRefreshTokenParams struct {
 	RevokedAt *time.Time
 	UserAgent string
 	IpAddress string
+	TeamID    *string
 	CreatedAt time.Time
 }
 
@@ -48,13 +49,14 @@ func (q *Queries) CreateRefreshToken(ctx context.Context, arg CreateRefreshToken
 		arg.RevokedAt,
 		arg.UserAgent,
 		arg.IpAddress,
+		arg.TeamID,
 		arg.CreatedAt,
 	)
 	return err
 }
 
 const getRefreshTokenByHash = `-- name: GetRefreshTokenByHash :one
-SELECT id, user_id, token_hash, expires_at, revoked_at, user_agent, ip_address, created_at FROM auth.refresh_tokens WHERE token_hash = $1
+SELECT id, user_id, token_hash, expires_at, revoked_at, user_agent, ip_address, created_at, team_id FROM auth.refresh_tokens WHERE token_hash = $1
 `
 
 func (q *Queries) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (AuthRefreshToken, error) {
@@ -69,12 +71,13 @@ func (q *Queries) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (
 		&i.UserAgent,
 		&i.IpAddress,
 		&i.CreatedAt,
+		&i.TeamID,
 	)
 	return i, err
 }
 
 const listActiveRefreshTokens = `-- name: ListActiveRefreshTokens :many
-SELECT id, user_id, token_hash, expires_at, revoked_at, user_agent, ip_address, created_at FROM auth.refresh_tokens
+SELECT id, user_id, token_hash, expires_at, revoked_at, user_agent, ip_address, created_at, team_id FROM auth.refresh_tokens
 WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()
 ORDER BY created_at, id
 `
@@ -97,6 +100,7 @@ func (q *Queries) ListActiveRefreshTokens(ctx context.Context, userID string) ([
 			&i.UserAgent,
 			&i.IpAddress,
 			&i.CreatedAt,
+			&i.TeamID,
 		); err != nil {
 			return nil, err
 		}

@@ -28,6 +28,19 @@ type AuthAccountLock struct {
 	LockedAt time.Time
 }
 
+type AuthBoundDevice struct {
+	ID         string
+	UserID     string
+	Name       string
+	TokenHash  string
+	UserAgent  string
+	IpAddress  string
+	ExpiresAt  *time.Time
+	LastUsedAt *time.Time
+	RevokedAt  *time.Time
+	CreatedAt  time.Time
+}
+
 type AuthDeviceAuthorization struct {
 	ID              string
 	DeviceCodeHash  string
@@ -98,6 +111,13 @@ type AuthPersonalAccessToken struct {
 	CreatedAt  time.Time
 }
 
+type AuthPinCredential struct {
+	UserID    string
+	PinHash   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type AuthRefreshToken struct {
 	ID        string
 	UserID    string
@@ -107,6 +127,7 @@ type AuthRefreshToken struct {
 	UserAgent string
 	IpAddress string
 	CreatedAt time.Time
+	TeamID    *string
 }
 
 type AuthSuperuser struct {

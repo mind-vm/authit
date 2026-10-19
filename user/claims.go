@@ -7,13 +7,18 @@ import (
 	authitjwt "github.com/mind-vm/authit/jwt"
 )
 
-func newAccessClaims(userID, email string, expiresAt time.Time) authitjwt.Claims {
+func newAccessClaims(userID, email string, teamID *string, expiresAt time.Time) authitjwt.Claims {
+	var team string
+	if teamID != nil {
+		team = *teamID
+	}
 	return authitjwt.Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
-		Email: email,
+		Email:  email,
+		TeamID: team,
 	}
 }
