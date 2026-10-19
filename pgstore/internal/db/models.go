@@ -126,6 +126,41 @@ type AuthSuperuserTotpSetting struct {
 	UpdatedAt          time.Time
 }
 
+type AuthTeam struct {
+	ID        string
+	Name      string
+	Slug      string
+	OwnerID   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type AuthTeamInvitation struct {
+	ID          string
+	TeamID      string
+	Email       string
+	TokenHash   string
+	Role        string
+	Status      string
+	InvitedByID *string
+	ExpiresAt   time.Time
+	AcceptedAt  *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type AuthTeamMember struct {
+	ID          string
+	TeamID      string
+	UserID      *string
+	Role        string
+	DisplayName string
+	Email       string
+	IsActive    bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type AuthTotpSetting struct {
 	ID                 string
 	UserID             string

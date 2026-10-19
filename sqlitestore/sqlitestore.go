@@ -1,6 +1,7 @@
-// Package sqlitestore implements auth's user-plane and operator-plane store
-// ports on SQLite: the same ports pgstore implements, for a CLI, a
-// single-host service or a test suite that has no Postgres to run against.
+// Package sqlitestore implements auth's user-plane, team-plane and
+// operator-plane store ports on SQLite: the same ports pgstore implements,
+// for a CLI, a single-host service or a test suite that has no Postgres to
+// run against.
 //
 // It uses modernc.org/sqlite, a pure-Go driver, so a binary embedding this
 // package still cross-compiles with nothing but GOOS and GOARCH.

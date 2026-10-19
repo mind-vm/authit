@@ -31,7 +31,10 @@ func TestConformance(t *testing.T) {
 	}
 
 	storetest.RunAll(t, storetest.Stores{
-		Fixtures:           storetest.Fixtures{EnsureUser: ensureUser(pool), EnsureSuperuser: ensureSuperuser(pool)},
+		Fixtures: storetest.Fixtures{
+			EnsureUser: ensureUser(pool), EnsureTeam: ensureTeam(pool), EnsureMember: ensureMember(pool),
+			EnsureSuperuser: ensureSuperuser(pool),
+		},
 		Users:              func(t *testing.T) store.UserStore { return empty(t) },
 		RefreshTokens:      func(t *testing.T) store.RefreshTokenStore { return empty(t) },
 		PasswordResets:     func(t *testing.T) store.PasswordResetStore { return empty(t) },
@@ -46,7 +49,42 @@ func TestConformance(t *testing.T) {
 		Superusers:         func(t *testing.T) store.SuperuserStore { return empty(t) },
 		SuperuserTokens:    func(t *testing.T) store.SuperuserRefreshTokenStore { return empty(t) },
 		SuperuserTwoFactor: func(t *testing.T) store.SuperuserTwoFactorStore { return empty(t) },
+		Teams:              func(t *testing.T) store.TeamStore { return empty(t) },
+		Members:            func(t *testing.T) store.MemberStore { return empty(t) },
+		Invitations:        func(t *testing.T) store.InvitationStore { return empty(t) },
 	})
+}
+
+// fixtureOwner owns the teams the conformance fixtures create; the suite's
+// own ids stop well short of it.
+const fixtureOwner = "00000000-0000-4000-8000-0000000000fe"
+
+// ensureTeam satisfies the foreign keys to auth.teams, owned by a fixture
+// user.
+func ensureTeam(pool *pgxpool.Pool) func(t *testing.T, teamID string) {
+	return func(t *testing.T, teamID string) {
+		t.Helper()
+		ensureUser(pool)(t, fixtureOwner)
+		_, err := pool.Exec(context.Background(), `INSERT INTO auth.teams (id, name, slug, owner_id)
+			VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING`, teamID, teamID, "fixture-"+teamID, fixtureOwner)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// ensureMember satisfies the foreign key from an invitation to the member
+// who sent it.
+func ensureMember(pool *pgxpool.Pool) func(t *testing.T, memberID, teamID string) {
+	return func(t *testing.T, memberID, teamID string) {
+		t.Helper()
+		ensureTeam(pool)(t, teamID)
+		_, err := pool.Exec(context.Background(), `INSERT INTO auth.team_members (id, team_id, role)
+			VALUES ($1, $2, 'member') ON CONFLICT (id) DO NOTHING`, memberID, teamID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // ensureSuperuser satisfies the foreign key from auth.superuser_refresh_tokens

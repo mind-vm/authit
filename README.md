@@ -13,7 +13,7 @@ Postgres at `PGTEST_DSN`). Tool versions are pinned in `mise.toml`.
 
 ## Design
 
-- **No database assumption.** Every package that touches persistence depends only on interfaces defined in `store`. A host application implements those interfaces against whatever it uses — Postgres, SQLite, DynamoDB, or nothing at all. `memstore` ships a reference in-memory implementation of every interface, so the library is usable and testable out of the box, and `pgstore` and `sqlitestore` ship the user and operator planes ready-made on Postgres and SQLite (see [Choosing a store](#choosing-a-store)).
+- **No database assumption.** Every package that touches persistence depends only on interfaces defined in `store`. A host application implements those interfaces against whatever it uses — Postgres, SQLite, DynamoDB, or nothing at all. `memstore` ships a reference in-memory implementation of every interface, so the library is usable and testable out of the box, and `pgstore` and `sqlitestore` ship the user, team and operator planes ready-made on Postgres and SQLite (see [Choosing a store](#choosing-a-store)).
 - **No social/OAuth login.** Email + password (+ optional TOTP) only, by design, for now.
 - **Three independent planes, one shared crypto/JWT layer:**
   - `user` — registration, login, sessions, password reset, email verification, TOTP/2FA.
@@ -31,7 +31,7 @@ Postgres at `PGTEST_DSN`). Tool versions are pinned in `mise.toml`.
 | `jwt` | JWT signing/verification (`Signer` interface, HMAC-SHA256 implementation), `Claims` |
 | `store` | Storage-port interfaces — the contract a host application implements |
 | `memstore` | In-memory implementation of every `store` interface, for tests and quick starts |
-| `pgstore` | The user and operator planes on Postgres, with their own migrations (`Migrate`) |
+| `pgstore` | The user, team and operator planes on Postgres, with their own migrations (`Migrate`) |
 | `sqlitestore` | The same ports as `pgstore` on SQLite, pure Go, for a CLI or a single host (`Open`) |
 | `user` | Registration, login/logout/refresh, sessions, password reset, email verification, TOTP/2FA |
 | `team` | Teams, membership, roles, invitations |
@@ -323,7 +323,7 @@ One thing to know about `team`: `Admission` runs *inside* the transaction, so a 
 
 ## Choosing a store
 
-`pgstore` and `sqlitestore` implement the same ports — users, sessions, reset and verification tokens, TOTP, lockout, linked accounts, passkeys, email login, the operator plane — plus `store.TxRunner`, and both pass the same `storetest` run. Neither covers teams, personal access tokens or device authorization; take those from `memstore` or your own adapter.
+`pgstore` and `sqlitestore` implement the same ports — users, sessions, reset and verification tokens, TOTP, lockout, linked accounts, passkeys, email login, teams, members and invitations, the operator plane — plus `store.TxRunner`, and both pass the same `storetest` run. Neither covers personal access tokens or device authorization; take those from `memstore` or your own adapter.
 
 | | Choose it when |
 |---|---|

@@ -1,6 +1,7 @@
-// Package pgstore implements auth's user-plane store ports on Postgres
-// through sqlc: users, sessions, reset and verification tokens, TOTP,
-// lockout, linked accounts, passkeys and email login.
+// Package pgstore implements auth's store ports on Postgres through sqlc:
+// the user plane (users, sessions, reset and verification tokens, TOTP,
+// lockout, linked accounts, passkeys and email login), the team plane
+// (teams, members and invitations) and the operator plane.
 //
 // Its tables live in the auth schema and migrate with their own goose
 // version table, so an app runs Migrate beside its own migrations and
@@ -56,7 +57,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-// Store implements every user-plane port and store.TxRunner over one pool.
+// Store implements every port above and store.TxRunner over one pool.
 type Store struct {
 	pool *pgxpool.Pool
 }

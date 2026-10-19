@@ -44,7 +44,13 @@ type Stores struct {
 	Members     store.MemberStore
 	Invitations store.InvitationStore
 	// Tx is optional. Supplying it makes CreateTeam and AcceptInvitation
-	// atomic; nil leaves them as independent writes. See store.TxRunner.
+	// atomic, and runs the last-owner check of UpdateMemberRole,
+	// SetMemberActive and RemoveMember in one transaction with the write it
+	// guards; nil leaves them as independent writes. See store.TxRunner.
+	// sqlitestore and pgstore both make that check hold under concurrency;
+	// a host adapter on a database with weaker isolation than serializable
+	// needs ListMembersByTeam to lock the rows it reads when called inside
+	// the transaction, as pgstore's does.
 	//
 	// Note that Admission runs inside the transaction, so that a seat limit
 	// is actually enforceable rather than advisory under concurrency: the
